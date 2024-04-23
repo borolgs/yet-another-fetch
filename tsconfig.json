@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "lib": ["esnext"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "skipLibCheck": true,
+    "strict": true,
+    "noStrictGenericChecks": false,
+    "declaration": true,
+    "baseUrl": ".",
+    "resolveJsonModule": true,
+    "paths": {
+      "~/*": ["src/*"],
+      "~mocks/*": ["mocks/*"],
+    },
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
