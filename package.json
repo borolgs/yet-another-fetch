@@ -1,6 +1,6 @@
 {
   "name": "yet-another-fetch",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "An HTTP client with retry functionality, callbacks, and error handling using neverthrow.",
   "keywords": [
     "fetch",
@@ -13,34 +13,23 @@
     "url": "https://github.com/borolgs/yet-another-fetch"
   },
   "license": "MIT",
-  "dependencies": {
-    "neverthrow": "8.1.1"
-  },
-  "main": "./dist/cjs/index.js",
-  "module": "./dist/esm/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "exports": {
-    ".": {
-      "require": "./dist/cjs/index.js",
-      "import": "./dist/esm/index.js"
-    }
-  },
+  "private": true,
   "type": "module",
+  "exports": "./src/index.ts",
   "scripts": {
     "test": "vitest run --reporter=verbose",
-    "build": "rollup -c rollup.config.js --bundleConfigAsCjs",
+    "build": "smartbundle",
     "format": "biome format --write ./src",
     "lint": "biome check --apply ./src"
   },
+  "dependencies": {
+    "neverthrow": "8.1.1"
+  },
   "devDependencies": {
-    "@biomejs/biome": "1.7.1",
-    "@rollup/plugin-typescript": "11.1.6",
-    "@types/node": "20.12.7",
-    "rollup": "4.16.3",
-    "tslib": "2.6.2",
+    "@biomejs/biome": "1.9.4",
+    "@types/node": "22.10.1",
+    "smartbundle": "0.11.1",
+    "typescript": "5.7.2",
     "undici": "7.0.0",
     "vitest": "2.1.6"
   }

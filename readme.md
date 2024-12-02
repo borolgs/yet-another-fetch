@@ -6,7 +6,7 @@ It utilizes the fetch API under the hood and provides an API similar to fetch wi
 
 > [!IMPORTANT]  
 > **Only for Node.js!**  
-> It's assumed that for the frontend, it's better to use specialized solutions like [Tanstack Query](https://tanstack.com/query/latest).
+> It's assumed that for the frontend, it's better to use specialized solutions like [Tanstack Query](https://tanstack.com/query/latest) or [Farfetched](https://ff.effector.dev/).
 
 Installation:
 
