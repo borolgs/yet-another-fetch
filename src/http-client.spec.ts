@@ -1,21 +1,29 @@
-import nock from 'nock';
+import { MockAgent, setGlobalDispatcher } from 'undici';
+import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 import { createHttpClient } from './http-client';
 
 describe('httpClient', () => {
   const baseUrl = 'https://example.com';
 
+  let agent: MockAgent;
+
   beforeEach(() => {
-    nock.disableNetConnect();
-    nock.cleanAll();
+    agent = new MockAgent();
+
+    setGlobalDispatcher(agent);
+    agent.disableNetConnect();
   });
 
   describe('handle HTTP errors properly', () => {
     test('404', async () => {
-      const inspectError = jest.fn();
+      const inspectError = vi.fn();
       const client = createHttpClient({ baseUrl, inspectError });
 
-      nock(baseUrl).get('/data').reply(404, { message: 'Not Found' });
+      agent
+        .get(baseUrl)
+        .intercept({ method: 'GET', path: '/data' })
+        .reply(404, { message: 'Not Found' });
 
       const result = (await client.request('/data', { method: 'GET' }))._unsafeUnwrapErr();
 
@@ -31,10 +39,11 @@ describe('httpClient', () => {
   test('handle JSON response', async () => {
     const client = createHttpClient({ baseUrl });
 
-    nock(baseUrl)
-      .persist()
-      .get('/data')
-      .reply(200, { message: 'Success!' }, { 'Content-Type': 'application/json' });
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .reply(200, { message: 'Success!' }, { headers: { 'Content-Type': 'application/json' } })
+      .persist();
 
     const result = (
       await client.request('/data', { method: 'GET' }).andThen((r) => r.json())
@@ -48,21 +57,25 @@ describe('httpClient', () => {
   test('handle JSON parse error', async () => {
     const client = createHttpClient({ baseUrl });
 
-    nock(baseUrl)
-      .persist()
-      .get('/data')
-      .reply(200, 'message: Success', { 'Content-Type': 'application/json' });
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .reply(200, 'message: Success', { headers: { 'Content-Type': 'application/json' } });
 
     const result = await client.request('/data', { method: 'GET' }).andThen((r) => r.json());
 
     expect(result.isErr()).toBe(true);
+
     expect((result._unsafeUnwrapErr().cause as any).name).toBe('SyntaxError');
   });
 
   test('handle non-JSON response', async () => {
     const client = createHttpClient({ baseUrl });
 
-    nock(baseUrl).get('/data').reply(200, 'plain text', { 'Content-Type': 'text/plain' });
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .reply(200, 'plain text', { headers: { 'Content-Type': 'text/plain' } });
 
     const result = (
       await client.request('/data', { method: 'GET' }).andThen((r) => r.text())
@@ -75,9 +88,10 @@ describe('httpClient', () => {
     const client = createHttpClient({ baseUrl });
 
     const requestData = { name: 'John', age: 30 };
-    nock(baseUrl)
-      .persist()
-      .post('/data', JSON.stringify(requestData))
+
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'POST', path: '/data', body: JSON.stringify(requestData) })
       .reply(200, { message: 'Data received' });
 
     const result = (
@@ -89,15 +103,14 @@ describe('httpClient', () => {
   });
 
   test('call callbacks', async () => {
-    const interceptRequest = jest.fn();
-    const inspectResponse = jest.fn();
-    const client = createHttpClient({
-      baseUrl,
-      interceptRequest,
-      inspectResponse,
-    });
+    const interceptRequest = vi.fn();
+    const inspectResponse = vi.fn();
+    const client = createHttpClient({ baseUrl, interceptRequest, inspectResponse });
 
-    nock(baseUrl).get('/data').reply(200, { message: 'Success!' });
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .reply(200, { message: 'Success!' });
 
     const result = await client.request('/data', { method: 'GET' });
 
@@ -107,7 +120,7 @@ describe('httpClient', () => {
   });
 
   test('merge defaultInit and init properly', async () => {
-    const interceptRequest = jest.fn();
+    const interceptRequest = vi.fn();
     const client = createHttpClient({
       baseUrl,
       interceptRequest,
@@ -117,15 +130,18 @@ describe('httpClient', () => {
       mode: 'cors',
     });
 
-    nock(baseUrl, {
-      reqheaders: {
-        'Content-Type': 'application/json',
-        'X-Custom-Header': 'newValue',
-        Authorization: 'Bearer token123',
-      },
-    })
-      .get('/data?someParam=true&anotherParam=someValue2&thirdParam=thirdValue#omg')
-      .reply(200, { message: 'Data received' });
+    agent
+      .get(baseUrl)
+      .intercept({
+        method: 'GET',
+        path: '/data?someParam=true&anotherParam=someValue2&thirdParam=thirdValue#omg',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Custom-Header': 'newValue',
+          Authorization: 'Bearer token123',
+        },
+      })
+      .reply(200, { message: 'Success!' });
 
     const result = await client.get(
       '/data?someParam=true&anotherParam=someValue2&thirdParam=thirdValue#omg',
@@ -145,26 +161,27 @@ describe('httpClient', () => {
     );
 
     expect(result.isOk()).toBe(true);
-    expect(interceptRequest.mock.lastCall[1]).toMatchObject({
+    expect(interceptRequest.mock.calls.at(-1)![1]).toMatchObject({
       credentials: 'same-origin',
       mode: 'no-cors',
     });
   });
 
   test('retry failed requests according to retry options', async () => {
-    const client = createHttpClient({
-      baseUrl,
-      retries: 3,
-      retryDelay: () => 10,
-    });
+    const client = createHttpClient({ baseUrl, retries: 3, retryDelay: () => 10 });
 
-    nock(baseUrl)
-      .get('/data')
-      .replyWithError('Request failed')
-      .get('/data')
-      .replyWithError('Request failed')
-      .get('/data')
-      .reply(200, { message: 'Data received' });
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .replyWithError(new Error('Request failed'));
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .replyWithError(new Error('Request failed'));
+    agent
+      .get(baseUrl)
+      .intercept({ method: 'GET', path: '/data' })
+      .reply(200, { message: 'Success' });
 
     const result = await client.request('/data', {
       method: 'GET',
