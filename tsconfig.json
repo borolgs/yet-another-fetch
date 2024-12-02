@@ -13,11 +13,7 @@
     "noStrictGenericChecks": false,
     "declaration": true,
     "baseUrl": ".",
-    "resolveJsonModule": true,
-    "paths": {
-      "~/*": ["src/*"],
-      "~mocks/*": ["mocks/*"],
-    },
+    "resolveJsonModule": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules"]
