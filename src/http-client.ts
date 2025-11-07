@@ -1,8 +1,14 @@
-import querystring from 'node:querystring';
-import { parse as urlParse } from 'node:url';
-import { Result, ResultAsync, errAsync, fromPromise, okAsync } from 'neverthrow';
+import querystring from "node:querystring";
+import { parse as urlParse } from "node:url";
+import {
+  Result,
+  ResultAsync,
+  errAsync,
+  fromPromise,
+  okAsync,
+} from "neverthrow";
 
-import { HttpClientError, createHttpError } from './http-client.errors';
+import { HttpClientError, createHttpError } from "./http-client.errors";
 
 // TODO: use input istead of plain str url
 export type Input = Parameters<typeof fetch>[0];
@@ -15,7 +21,7 @@ export type HttpError = HttpClientError;
 
 export type HttpResponse<T> = Omit<
   Response,
-  'text' | 'json' | 'blob' | 'formData' | 'arrayBuffer'
+  "text" | "json" | "blob" | "formData" | "arrayBuffer"
 > & {
   text: () => ResultAsync<string, HttpError>;
   json: () => ResultAsync<T, HttpError>;
@@ -24,18 +30,27 @@ export type HttpResponse<T> = Omit<
   arrayBuffer: () => ResultAsync<ArrayBuffer, HttpError>;
 };
 
-export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
+export type HttpClientDefaultConfig = Omit<RequestInit, "body" | "method"> & {
   baseUrl?: string;
 
   interceptRequest?: (url: string, config: Init) => void;
   inspectError?: (error: HttpError) => void;
   inspectResponse?: (
-    res: Omit<Response, 'text' | 'json' | 'blob' | 'formData' | 'arrayBuffer' | 'body'>,
+    res: Omit<
+      Response,
+      "text" | "json" | "blob" | "formData" | "arrayBuffer" | "body"
+    >,
   ) => void;
 
   retries?: number;
-  retryDelay?: <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) => number;
-  retryOn?: <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) => boolean;
+  retryDelay?: <T>(
+    attempt: number,
+    result: Result<HttpResponse<T>, HttpError>,
+  ) => number;
+  retryOn?: <T>(
+    attempt: number,
+    result: Result<HttpResponse<T>, HttpError>,
+  ) => boolean;
 };
 
 /**
@@ -63,8 +78,14 @@ export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
  * ```
  */
 export function createHttpClient(config: HttpClientDefaultConfig = {}) {
-  const { baseUrl, interceptRequest, inspectError, inspectResponse, retries, ...defaultConfig } =
-    config;
+  const {
+    baseUrl,
+    interceptRequest,
+    inspectError,
+    inspectResponse,
+    retries,
+    ...defaultConfig
+  } = config;
 
   const retryDelay = config.retryDelay ?? (() => 1000);
   const retryOn =
@@ -83,7 +104,10 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
    * 3. Wraps the promises in `ResultAsync`.
    */
 
-  function request<T>(url: string, init?: Init): ResultAsync<HttpResponse<T>, HttpError> {
+  function request<T>(
+    url: string,
+    init?: Init,
+  ): ResultAsync<HttpResponse<T>, HttpError> {
     const { headers, body, data, query, ...config } = init ?? {};
     const defaultHeaders = defaultConfig.headers ?? {};
 
@@ -105,7 +129,9 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 
     interceptRequest?.(targetUrl.toString(), targetInit);
 
-    return fromPromise(fetch(targetUrl, targetInit), (err) => createHttpError({ cause: err }))
+    return fromPromise(fetch(targetUrl, targetInit), (err) =>
+      createHttpError({ cause: err }),
+    )
       .andThen((res) => {
         if (!res.ok) {
           return errAsync(
@@ -138,7 +164,9 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     let res: Result<HttpResponse<T>, HttpError>;
     do {
       if (shouldRetry) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt, res!)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, retryDelay(attempt, res!)),
+        );
       }
       res = await request<T>(url, init);
       shouldRetry = retryOn(attempt, res);
@@ -154,17 +182,19 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 
   return {
     request: requestWithRetry,
-    get: <T>(url: string, init?: Omit<Init, 'method' | 'data' | 'body'>) =>
-      requestWithRetry<T>(url, { ...init, method: 'GET' }),
-    post: <T>(url: string, init?: Omit<Init, 'method'>) =>
-      requestWithRetry<T>(url, { ...init, method: 'POST' }),
+    get: <T>(url: string, init?: Omit<Init, "method" | "data" | "body">) =>
+      requestWithRetry<T>(url, { ...init, method: "GET" }),
+    post: <T>(url: string, init?: Omit<Init, "method">) =>
+      requestWithRetry<T>(url, { ...init, method: "POST" }),
     // TODO: add other methods
   };
 }
 
 export type HttpClient = ReturnType<typeof createHttpClient>;
 
-export function retryOnStatus(statuses: number[]): HttpClientDefaultConfig['retryOn'] {
+export function retryOnStatus(
+  statuses: number[],
+): HttpClientDefaultConfig["retryOn"] {
   return <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) =>
     result.match(
       (res) => statuses.includes(res.status),
@@ -177,7 +207,9 @@ export function retryOnStatus(statuses: number[]): HttpClientDefaultConfig['retr
     );
 }
 
-export function retryDelayExp2(startDelay = 1000): HttpClientDefaultConfig['retryDelay'] {
+export function retryDelayExp2(
+  startDelay = 1000,
+): HttpClientDefaultConfig["retryDelay"] {
   return (attempt: number) => 2 ** attempt * startDelay;
 }
 
@@ -185,13 +217,15 @@ function wrapBodyMethods<T>(res: Response): HttpResponse<T> {
   return new Proxy(res, {
     get(target: any, prop, receiver) {
       if (
-        ['json', 'arrayBuffer', 'blob', 'formData', 'text'].includes(prop.toString()) &&
-        typeof target[prop] === 'function'
+        ["json", "arrayBuffer", "blob", "formData", "text"].includes(
+          prop.toString(),
+        ) &&
+        typeof target[prop] === "function"
       ) {
         return new Proxy(target[prop], {
-          apply: (target, thisArg, argumentsList) => {
+          apply: (target, _, argumentsList) => {
             return ResultAsync.fromPromise(
-              Reflect.apply(target, thisArg, argumentsList) as any,
+              Reflect.apply(target, res, argumentsList) as any,
               (e) => createHttpError({ cause: e }),
             );
           },

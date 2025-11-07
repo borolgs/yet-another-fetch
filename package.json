@@ -1,6 +1,6 @@
 {
   "name": "yet-another-fetch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An HTTP client with retry functionality, callbacks, and error handling using neverthrow.",
   "keywords": [
     "fetch",
@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
-    "@types/node": "22.10.1",
+    "@types/node": "24.10.0",
     "smartbundle": "0.11.1",
     "typescript": "5.7.2",
     "undici": "7.0.0",
