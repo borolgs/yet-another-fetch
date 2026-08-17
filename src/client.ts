@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import querystring from 'node:querystring';
 import { parse as urlParse } from 'node:url';
 
-import { Result, ResultAsync, err, errAsync, fromPromise, ok, okAsync } from 'neverthrow';
-import { CreateHttpClientError, HttpClientError, createHttpError } from './errors';
+import { err, errAsync, fromPromise, ok, okAsync, Result, ResultAsync } from 'neverthrow';
+import { CreateHttpClientError, createHttpError, HttpClientError } from './errors';
 
 // TODO: accept Input instead of string URLs.
 export type Input = Parameters<typeof fetch>[0];
@@ -12,6 +12,8 @@ export type Init = RequestInit & {
   query?: Record<string, any>;
   /** Correlation ID for this call; overrides the client-level generator. */
   requestId?: string;
+  /** Per-attempt timeout in milliseconds. */
+  timeout?: number;
 };
 
 export type HttpError = HttpClientError;
@@ -68,6 +70,9 @@ export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
   /** Correlation ID generator. Defaults to `crypto.randomUUID()`. */
   requestId?: () => string;
 
+  /** Per-attempt timeout in milliseconds. */
+  timeout?: number;
+
   /** Receives hook failures. Errors are ignored when this is unset. */
   onHookError?: (err: unknown, info: { hook: HookName; plugin?: string }) => void;
 
@@ -120,6 +125,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     retryDelay: retryDelayOption,
     retryOn: retryOnOption,
     signal: configSignal,
+    timeout: configTimeout,
     ...defaultConfig
   } = config;
 
@@ -137,12 +143,23 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     ctx: MutableRequestContext;
     /** Per-call signal wins over the client-level one; they are not merged. */
     signal: AbortSignal | null | undefined;
+    timeout: number | undefined;
   };
 
   /** Builds request state before retries; failures return configuration errors without hooks. */
   function prepare(url: string, init?: Init): Result<PreparedRequest, HttpError> {
-    const { headers, body, data, query, requestId, method, signal, ...rest } = init ?? {};
+    const { headers, body, data, query, requestId, method, signal, timeout, ...rest } = init ?? {};
     const defaultHeaders = defaultConfig.headers ?? {};
+
+    const targetTimeout = timeout ?? configTimeout;
+    if (targetTimeout != null && !isValidTimeout(targetTimeout)) {
+      return err(
+        createHttpError({
+          reason: 'config',
+          message: `Invalid timeout: ${targetTimeout}. Expected an integer between 0 and ${MAX_TIMEOUT_MS}.`,
+        }),
+      );
+    }
 
     const targetUrlStr = baseUrl ? baseUrl + url : url;
 
@@ -193,7 +210,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       },
     };
 
-    return ok({ ctx, signal: signal ?? configSignal });
+    return ok({ ctx, signal: signal ?? configSignal, timeout: targetTimeout });
   }
 
   function nextRequestId(): string {
@@ -213,15 +230,18 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       return err(prepared.error);
     }
 
-    const { ctx, signal } = prepared.value;
+    const { ctx, signal, timeout } = prepared.value;
 
     let result: Result<HttpResponse<T>, HttpError>;
 
     for (;;) {
       callOnAttempt(ctx);
 
-      result = await attempt<T>(ctx, signal);
+      result = await attempt<T>(ctx, attemptSignals(signal, timeout));
 
+      if (result.isErr() && result.error.reason === 'abort') {
+        break;
+      }
       if (retries == null || ctx.attempt >= retries - 1) {
         break;
       }
@@ -255,10 +275,11 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
   /** Fetches the snapshotted URL and maps non-2xx responses to an `HttpError`. */
   function attempt<T>(
     ctx: MutableRequestContext,
-    signal: AbortSignal | null | undefined,
+    signals: AttemptSignals,
   ): ResultAsync<HttpResponse<T>, HttpError> {
-    return fromPromise(fetch(ctx.href, { ...ctx.init, method: ctx.method, signal }), (error) =>
-      httpErrorFrom(ctx, { reason: 'network', cause: error }),
+    return fromPromise(
+      fetch(ctx.href, { ...ctx.init, method: ctx.method, signal: signals.fetch }),
+      (error) => transportError(ctx, signals, error),
     ).andThen((res) => {
       if (!res.ok) {
         return errAsync(
@@ -376,6 +397,55 @@ export function retryDelayExp2(
   startDelay = 1000,
 ): NonNullable<HttpClientDefaultConfig['retryDelay']> {
   return (ctx: RequestContext) => 2 ** ctx.attempt * startDelay;
+}
+
+type AttemptSignals = {
+  fetch: AbortSignal | undefined;
+  timeout: AbortSignal | undefined;
+  caller: AbortSignal | null | undefined;
+  timeoutMs: number | undefined;
+};
+
+/** `AbortSignal.timeout` throws outside this range, so `prepare` rejects it as a config error. */
+const MAX_TIMEOUT_MS = 2 ** 32 - 1;
+
+function isValidTimeout(ms: number): boolean {
+  return typeof ms === 'number' && Number.isInteger(ms) && ms >= 0 && ms <= MAX_TIMEOUT_MS;
+}
+
+function attemptSignals(
+  caller: AbortSignal | null | undefined,
+  timeoutMs: number | undefined,
+): AttemptSignals {
+  const timeout = timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
+
+  const signals = [timeout, caller].filter((signal): signal is AbortSignal => signal != null);
+
+  return {
+    fetch: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+    timeout,
+    caller,
+    timeoutMs,
+  };
+}
+
+/** Classifies failures from the signals, not their caller-controlled abort reasons. */
+function transportError(
+  ctx: MutableRequestContext,
+  signals: AttemptSignals,
+  cause: unknown,
+): HttpClientError {
+  if (signals.timeout?.aborted) {
+    return httpErrorFrom(ctx, {
+      reason: 'timeout',
+      message: `Request timed out after ${signals.timeoutMs}ms`,
+      cause,
+    });
+  }
+  if (signals.caller?.aborted) {
+    return httpErrorFrom(ctx, { reason: 'abort', message: 'Request aborted', cause });
+  }
+  return httpErrorFrom(ctx, { reason: 'network', cause });
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

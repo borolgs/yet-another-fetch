@@ -41,7 +41,16 @@ Two files in `src/`, both re-exported via `index.ts`; tests live in `src/tests/`
   hook mutating `ctx.url` can move neither the request nor the error metadata.
 - Retry: `retryOn(ctx, result)` / `retryDelay(ctx, result)` read `ctx.attempt` (0-based, the attempt
   that just failed). `retries` unset = no retries. `retryOnStatus` / `retryDelayExp2` are the
-  built-in helpers.
+  built-in helpers. `reason: 'abort'` breaks the loop before `retryOn` is consulted.
+- `timeout` is per attempt. `attemptSignals(caller, ms)` is called **inside** the loop — a fired
+  `AbortSignal.timeout` stays aborted forever, so hoisting it would kill every retry instantly (there
+  is a test that fails if you do). The effective caller signal is `init.signal ?? config.signal`,
+  resolved in `prepare`, per-call wins, never merged. `transportError` classifies from
+  `signals.timeout?.aborted` → `'timeout'`, then `signals.caller?.aborted` → `'abort'`, else
+  `'network'` — never from `AbortSignal.any()`'s reason, which a caller can forge. The effective
+  timeout is validated in `prepare` (`isValidTimeout`: integer, `0 … 2**32-1`) and returns
+  `err(reason: 'config')` — `AbortSignal.timeout` throws a `RangeError` outside that range, and it
+  runs inside the loop, outside any error mapping.
 - Plugins (`onAttempt` / `onSettled`) run in array order. `onSettled` fires exactly once per call
   that reached the fetch stage, after `ctx.duration` is set (measured to response headers, not to
   body read). A throwing hook goes to `onHookError` and never fails the request; `onHookError` is
@@ -61,7 +70,8 @@ a required field on the factory input so no new error path can forget it.
 
 Tests live in `src/tests/`, split by concern: `request` (methods, init merge), `response` (body
 methods / proxy), `errors` (reasons, never-throws), `retry`, `context` (`ctx` + `requestId`),
-`plugins`, `hook-errors`.
+`plugins`, `hook-errors`, `timeout` (timeout + signal). The mock's `.delay(ms)` is how a slow
+upstream is simulated.
 
 `tests/helpers.ts` exports `baseUrl` and `setupMockAgent()` — call it once per file at module
 scope. It installs a fresh undici `MockAgent` + `setGlobalDispatcher` with `disableNetConnect()` in
@@ -73,5 +83,6 @@ for `agent.get(baseUrl).intercept(...)` that still chains `.reply()` / `.replyWi
 
 - Node-only by design; the readme deliberately points users to openapi-fetch + fetch-retry as
   better-supported alternatives. Keep the scope small — don't grow the API beyond what's asked.
-- `timeout` and `AbortSignal` handling do not exist yet, so the `'timeout'` / `'abort'` reasons are
-  declared but never produced. Stage 3 fills them in.
+- `AbortSignal.any` puts a floor under the runtime: `engines` declares `node >= 20.3.0`.
+- The timeout signal stays live after the response headers, so it also bounds the lazy body read —
+  standard `fetch` behaviour, but it means a body pulled late enough fails with `reason: 'parse'`.

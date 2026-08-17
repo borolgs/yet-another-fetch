@@ -15,6 +15,9 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.3.0"
+  },
   "exports": "./src/index.ts",
   "scripts": {
     "test": "vitest run --reporter=verbose",
