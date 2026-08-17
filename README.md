@@ -15,14 +15,17 @@ pnpm i yet-another-fetch
 ```
 
 ```ts
-import { createHttpClient, retryOnStatus, retryDelayExp2 } from 'yet-another-fetch';
+import { createHttpClient, delayWith, retryWhen } from 'yet-another-fetch';
 
 const client = createHttpClient({
   baseUrl: 'https://example.com',
-  retries: 3,
+  retries: 3, // attempts in total; unset = no retries
   timeout: 5000, // per attempt, also overridable per call
-  retryDelay: retryDelayExp2(1000), // or (ctx) => 2 ** ctx.attempt * 1000
-  retryOn: retryOnStatus([401, 500]),
+  // 200/400/800…, capped at 30s, equal jitter; a Retry-After header wins and is never jittered
+  retryDelay: delayWith({ base: 200, max: 30_000, jitter: 'equal', retryAfter: true }),
+  // defaults to retryOnTransient: network | timeout | 408 | 429 | 5xx. Fields are OR-ed,
+  // `statuses` takes codes and inclusive ranges, `predicate` is (error, ctx) => boolean
+  retryOn: retryWhen({ reasons: ['timeout'], statuses: [429, [500, 599]] }),
   onHookError: (err, { hook, plugin }) => log.error({ err, hook, plugin }),
   plugins: [
     {
@@ -58,7 +61,11 @@ const { message } = await client
   caller is about to read, so `res.clone()` before touching the body.
 - Hooks are sync, run in array order, and never fail the request — a throwing one goes to
   `onHookError`, which is silent when unset.
-- `ctx.attempt` is 0-based, shared with `retryOn(ctx, result)` / `retryDelay(ctx, result)`.
+- `ctx.attempt` is 0-based, shared with `retryOn(ctx, result)` / `retryDelay(ctx, result)`. Only
+  `status | network | timeout` errors reach `retryOn`, and an `Ok` never retries through `retryWhen`.
+  There are no and/not combinators — write a function:
+  `(ctx, result) => retryOnTransient(ctx, result) && ctx.method === 'GET'`.
+- A `ReadableStream` body is not replayable, so leave `retries` unset for one.
 - Each attempt gets a fresh `timeout`; a caller `signal` is never retried, and a per-call one replaces
   the client-level one rather than merging with it.
 - `ctx.id` is `crypto.randomUUID()`, overridable per call with `requestId: string` or client-wide with

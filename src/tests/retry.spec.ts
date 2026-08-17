@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { createHttpClient, type RequestContext, retryDelayExp2 } from '../client';
+import { createHttpClient, type RequestContext } from '../client';
+import { delayWith } from '../retry';
 import { baseUrl, setupMockAgent } from './helpers';
 
 const agent = setupMockAgent();
@@ -19,15 +20,60 @@ test('retry failed requests according to retry options', async () => {
   expect(result.isOk()).toBe(true);
 });
 
+describe('the default retryOn', () => {
+  /** `onAttempt` fires once per fetch, so it is the attempt counter. */
+  function clientCountingAttempts() {
+    const onAttempt = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 3,
+      retryDelay: () => 10,
+      plugins: [{ onAttempt }],
+    });
+    return { client, onAttempt };
+  }
+
+  test('does not retry a 404', async () => {
+    const { client, onAttempt } = clientCountingAttempts();
+    agent.intercept({ method: 'GET', path: '/data' }).reply(404, 'nope').persist();
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.statusCode).toBe(404);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries a 503 until the budget runs out', async () => {
+    const { client, onAttempt } = clientCountingAttempts();
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.statusCode).toBe(503);
+    expect(onAttempt).toHaveBeenCalledTimes(3);
+  });
+
+  test('retries a transport failure', async () => {
+    const { client, onAttempt } = clientCountingAttempts();
+    agent.intercept({ method: 'GET', path: '/data' }).replyWithError(new Error('Request failed'));
+    agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'Success' });
+
+    const result = await client.get('/data');
+
+    expect(result.isOk()).toBe(true);
+    expect(onAttempt).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('retry helpers', () => {
-  test('retryDelayExp2 waits startDelay before the first retry', async () => {
-    const exp2 = retryDelayExp2(200);
+  test('delayWith waits base before the first retry', async () => {
+    const backoff = delayWith({ base: 200 });
     // `ctx` is one mutable object, so record `attempt` at call time, not by reference.
     const attempts: number[] = [];
     const delays: number[] = [];
-    const retryDelay: typeof exp2 = (ctx, result) => {
+    const retryDelay: typeof backoff = (ctx, result) => {
       attempts.push(ctx.attempt);
-      const delay = exp2(ctx, result);
+      const delay = backoff(ctx, result);
       delays.push(delay);
       return delay;
     };
