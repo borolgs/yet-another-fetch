@@ -29,10 +29,16 @@ const client = createHttpClient({
       onAttempt(ctx) {
         // runs before every attempt, the only place the request can be changed
         // ctx.init.headers = { ...ctx.init.headers, authorization: token() };
+        if (ctx.attempt === 0) {
+          log.info({ id: ctx.id, method: ctx.method, url: ctx.url.href }, 'api request');
+        }
       },
       onSettled(ctx, result) {
         // runs once per call, after every retry
-        log.info({ id: ctx.id, url: ctx.url.href, attempts: ctx.attempt + 1, ms: ctx.duration });
+        log.info(
+          { id: ctx.id, url: ctx.url.href, attempts: ctx.attempt + 1, ms: ctx.duration },
+          'api response',
+        );
       },
     },
   ],
