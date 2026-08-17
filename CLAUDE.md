@@ -31,11 +31,26 @@ Three files in `src/`, all exported via `index.ts`.
   body methods via `Reflect.apply(target, res, …)` (commit a25b72c), and every other property via
   `Reflect.get(target, prop, res)` with function values bound to `res`, so accessors like `status` /
   `ok` / `headers` don't blow up on private `#state`.
-- Retry lives in `_requestWithRetry`: a do/while loop calling `retryOn(attempt, result)` and
-  sleeping `retryDelay(attempt, result)`. `retries` unset = no retries. `retryOnStatus` /
-  `retryDelayExp2` are the built-in helpers.
-- Callbacks: `interceptRequest` mutates the outgoing init in place; `inspectResponse` /
-  `inspectError` are side-effect-only.
+- The shape is `prepare(ctx) → loop { onAttempt, fetch } → settle → onSettled`. `prepare` builds the
+  url and init **once**, before the loop; everything that can throw lives there and comes back as
+  `err(reason: 'config')` — no ctx exists yet, so a `'config'` error fires no hook at all.
+- `RequestContext` is one object per *logical* call: it survives retries, is threaded into every
+  hook, and its scalars land on every error via `httpErrorFrom`. `ctx.init` is deliberately shared
+  mutable state across attempts — what `onAttempt` writes persists. `ctx.url` is observability
+  only: `ctx.href` (snapshotted in `prepare`) is what fetch is given *and* what errors report, so a
+  hook mutating `ctx.url` can move neither the request nor the error metadata.
+- Retry: `retryOn(ctx, result)` / `retryDelay(ctx, result)` read `ctx.attempt` (0-based, the attempt
+  that just failed). `retries` unset = no retries. `retryOnStatus` / `retryDelayExp2` are the
+  built-in helpers.
+- Plugins (`onAttempt` / `onSettled`) run in array order. `onSettled` fires exactly once per call
+  that reached the fetch stage, after `ctx.duration` is set (measured to response headers, not to
+  body read). A throwing hook goes to `onHookError` and never fails the request; `onHookError` is
+  unset by default, and the library never writes to `console` on its own.
+- Every hook goes through one function, `runHook(hook, plugin, call)`: it never throws, and
+  `undefined` back means "unusable, use the fallback" — so `retryOn`/`retryDelay`/`requestId` fail
+  closed for free. Hooks are **sync**; `() => void` also accepts an `async` one, whose rejection
+  would reach `unhandledRejection` and kill the process, so a returned thenable is adopted into
+  `onHookError` and its value dropped.
 
 `http-client.errors.ts` — `HttpClientError` plus the `createHttpError` factory (only sets fields
 that are present) and `isHttpClientError` guard. Every error carries a required
@@ -44,8 +59,15 @@ a required field on the factory input so no new error path can forget it.
 
 ## Tests
 
-`http-client.spec.ts` mocks the network with undici's `MockAgent` + `setGlobalDispatcher`, with
-`disableNetConnect()`. Use `_unsafeUnwrapErr()` / `_unsafeUnwrap()` to assert on results.
+Tests live in `src/tests/`, split by concern: `request` (methods, init merge), `response` (body
+methods / proxy), `errors` (reasons, never-throws), `retry`, `context` (`ctx` + `requestId`),
+`plugins`, `hook-errors`.
+
+`tests/helpers.ts` exports `baseUrl` and `setupMockAgent()` — call it once per file at module
+scope. It installs a fresh undici `MockAgent` + `setGlobalDispatcher` with `disableNetConnect()` in
+`beforeEach` (and `vi.restoreAllMocks()` in `afterEach`), and returns `{ intercept }`, a shortcut
+for `agent.get(baseUrl).intercept(...)` that still chains `.reply()` / `.replyWithError()` /
+`.persist()`. Use `_unsafeUnwrapErr()` / `_unsafeUnwrap()` to assert on results.
 
 ## Notes
 
