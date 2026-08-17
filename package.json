@@ -1,7 +1,7 @@
 {
   "name": "yet-another-fetch",
-  "version": "0.1.1",
-  "description": "An HTTP client with retry functionality, callbacks, and error handling using neverthrow.",
+  "version": "0.2.0",
+  "description": "An HTTP client with retry functionality, plugins, and error handling using neverthrow.",
   "keywords": [
     "fetch",
     "neverthrow",
