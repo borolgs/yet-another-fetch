@@ -1,14 +1,8 @@
-import querystring from "node:querystring";
-import { parse as urlParse } from "node:url";
-import {
-  Result,
-  ResultAsync,
-  errAsync,
-  fromPromise,
-  okAsync,
-} from "neverthrow";
+import querystring from 'node:querystring';
+import { parse as urlParse } from 'node:url';
 
-import { HttpClientError, createHttpError } from "./http-client.errors";
+import { errAsync, fromPromise, okAsync, Result, ResultAsync } from 'neverthrow';
+import { createHttpError, HttpClientError } from './http-client.errors';
 
 // TODO: use input istead of plain str url
 export type Input = Parameters<typeof fetch>[0];
@@ -21,7 +15,7 @@ export type HttpError = HttpClientError;
 
 export type HttpResponse<T> = Omit<
   Response,
-  "text" | "json" | "blob" | "formData" | "arrayBuffer"
+  'text' | 'json' | 'blob' | 'formData' | 'arrayBuffer'
 > & {
   text: () => ResultAsync<string, HttpError>;
   json: () => ResultAsync<T, HttpError>;
@@ -30,27 +24,18 @@ export type HttpResponse<T> = Omit<
   arrayBuffer: () => ResultAsync<ArrayBuffer, HttpError>;
 };
 
-export type HttpClientDefaultConfig = Omit<RequestInit, "body" | "method"> & {
+export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
   baseUrl?: string;
 
   interceptRequest?: (url: string, config: Init) => void;
   inspectError?: (error: HttpError) => void;
   inspectResponse?: (
-    res: Omit<
-      Response,
-      "text" | "json" | "blob" | "formData" | "arrayBuffer" | "body"
-    >,
+    res: Omit<Response, 'text' | 'json' | 'blob' | 'formData' | 'arrayBuffer' | 'body'>,
   ) => void;
 
   retries?: number;
-  retryDelay?: <T>(
-    attempt: number,
-    result: Result<HttpResponse<T>, HttpError>,
-  ) => number;
-  retryOn?: <T>(
-    attempt: number,
-    result: Result<HttpResponse<T>, HttpError>,
-  ) => boolean;
+  retryDelay?: <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) => number;
+  retryOn?: <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) => boolean;
 };
 
 /**
@@ -78,14 +63,8 @@ export type HttpClientDefaultConfig = Omit<RequestInit, "body" | "method"> & {
  * ```
  */
 export function createHttpClient(config: HttpClientDefaultConfig = {}) {
-  const {
-    baseUrl,
-    interceptRequest,
-    inspectError,
-    inspectResponse,
-    retries,
-    ...defaultConfig
-  } = config;
+  const { baseUrl, interceptRequest, inspectError, inspectResponse, retries, ...defaultConfig } =
+    config;
 
   const retryDelay = config.retryDelay ?? (() => 1000);
   const retryOn =
@@ -104,38 +83,61 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
    * 3. Wraps the promises in `ResultAsync`.
    */
 
-  function request<T>(
-    url: string,
-    init?: Init,
-  ): ResultAsync<HttpResponse<T>, HttpError> {
+  function request<T>(url: string, init?: Init): ResultAsync<HttpResponse<T>, HttpError> {
     const { headers, body, data, query, ...config } = init ?? {};
     const defaultHeaders = defaultConfig.headers ?? {};
 
     // TODO: delete base url query?
     const targetUrlStr = baseUrl ? baseUrl + url : url;
-    const targetUrl = new URL(targetUrlStr);
 
-    if (query) {
-      const urlQuery = urlParse(targetUrlStr, true).query;
-      targetUrl.search = `?${querystring.stringify({ ...urlQuery, ...query })}`;
+    let targetUrl: URL;
+    try {
+      targetUrl = new URL(targetUrlStr);
+
+      if (query) {
+        const urlQuery = urlParse(targetUrlStr, true).query;
+        targetUrl.search = `?${querystring.stringify({ ...urlQuery, ...query })}`;
+      }
+    } catch (err) {
+      return errAsync(
+        createHttpError({
+          reason: 'config',
+          message: `Invalid request url: ${targetUrlStr}`,
+          cause: err,
+        }),
+      );
+    }
+
+    let targetBody: RequestInit['body'];
+    try {
+      targetBody = data ? JSON.stringify(data) : body;
+    } catch (err) {
+      return errAsync(
+        createHttpError({
+          reason: 'config',
+          message: 'Failed to serialize request data',
+          cause: err,
+        }),
+      );
     }
 
     const targetInit = {
       ...defaultConfig,
       ...config,
       headers: { ...defaultHeaders, ...headers },
-      body: data ? JSON.stringify(data) : body,
+      body: targetBody,
     };
 
     interceptRequest?.(targetUrl.toString(), targetInit);
 
     return fromPromise(fetch(targetUrl, targetInit), (err) =>
-      createHttpError({ cause: err }),
+      createHttpError({ reason: 'network', cause: err }),
     )
       .andThen((res) => {
         if (!res.ok) {
           return errAsync(
             createHttpError({
+              reason: 'status',
               message: res.statusText,
               status: res.statusText,
               statusCode: res.status,
@@ -164,9 +166,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     let res: Result<HttpResponse<T>, HttpError>;
     do {
       if (shouldRetry) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, retryDelay(attempt, res!)),
-        );
+        await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt, res!)));
       }
       res = await request<T>(url, init);
       shouldRetry = retryOn(attempt, res);
@@ -182,19 +182,24 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 
   return {
     request: requestWithRetry,
-    get: <T>(url: string, init?: Omit<Init, "method" | "data" | "body">) =>
-      requestWithRetry<T>(url, { ...init, method: "GET" }),
-    post: <T>(url: string, init?: Omit<Init, "method">) =>
-      requestWithRetry<T>(url, { ...init, method: "POST" }),
-    // TODO: add other methods
+    get: <T>(url: string, init?: Omit<Init, 'method' | 'data' | 'body'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'GET' }),
+    head: <T>(url: string, init?: Omit<Init, 'method' | 'data' | 'body'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'HEAD' }),
+    delete: <T>(url: string, init?: Omit<Init, 'method' | 'data' | 'body'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'DELETE' }),
+    post: <T>(url: string, init?: Omit<Init, 'method'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'POST' }),
+    put: <T>(url: string, init?: Omit<Init, 'method'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'PUT' }),
+    patch: <T>(url: string, init?: Omit<Init, 'method'>) =>
+      requestWithRetry<T>(url, { ...init, method: 'PATCH' }),
   };
 }
 
 export type HttpClient = ReturnType<typeof createHttpClient>;
 
-export function retryOnStatus(
-  statuses: number[],
-): HttpClientDefaultConfig["retryOn"] {
+export function retryOnStatus(statuses: number[]): HttpClientDefaultConfig['retryOn'] {
   return <T>(attempt: number, result: Result<HttpResponse<T>, HttpError>) =>
     result.match(
       (res) => statuses.includes(res.status),
@@ -207,31 +212,28 @@ export function retryOnStatus(
     );
 }
 
-export function retryDelayExp2(
-  startDelay = 1000,
-): HttpClientDefaultConfig["retryDelay"] {
+export function retryDelayExp2(startDelay = 1000): HttpClientDefaultConfig['retryDelay'] {
   return (attempt: number) => 2 ** attempt * startDelay;
 }
 
 function wrapBodyMethods<T>(res: Response): HttpResponse<T> {
   return new Proxy(res, {
-    get(target: any, prop, receiver) {
+    get(target: any, prop) {
       if (
-        ["json", "arrayBuffer", "blob", "formData", "text"].includes(
-          prop.toString(),
-        ) &&
-        typeof target[prop] === "function"
+        ['json', 'arrayBuffer', 'blob', 'formData', 'text'].includes(prop.toString()) &&
+        typeof target[prop] === 'function'
       ) {
         return new Proxy(target[prop], {
           apply: (target, _, argumentsList) => {
-            return ResultAsync.fromPromise(
-              Reflect.apply(target, res, argumentsList) as any,
-              (e) => createHttpError({ cause: e }),
+            return ResultAsync.fromPromise(Reflect.apply(target, res, argumentsList) as any, (e) =>
+              createHttpError({ reason: 'parse', cause: e }),
             );
           },
         });
       }
-      return Reflect.get(target, prop, receiver);
+
+      const value = Reflect.get(target, prop, res);
+      return typeof value === 'function' ? value.bind(res) : value;
     },
   });
 }
