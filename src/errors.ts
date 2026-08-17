@@ -28,6 +28,11 @@ export class HttpClientError extends Error {
 
   response?: Response;
 
+  url?: string;
+  method?: string;
+  attempt?: number;
+  requestId?: string;
+
   constructor(message: string, reason: HttpErrorReason = 'network') {
     super(message);
     this.reason = reason;

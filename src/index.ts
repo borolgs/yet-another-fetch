@@ -1,2 +1,2 @@
-export * from './http-client';
-export * from './http-client.errors';
+export * from './client';
+export * from './errors';
