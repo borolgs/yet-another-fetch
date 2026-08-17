@@ -61,8 +61,10 @@ const { message } = await client
 - `ctx.attempt` is 0-based, shared with `retryOn(ctx, result)` / `retryDelay(ctx, result)`.
 - Each attempt gets a fresh `timeout`; a caller `signal` is never retried, and a per-call one replaces
   the client-level one rather than merging with it.
+- `ctx.id` is `crypto.randomUUID()`, overridable per call with `requestId: string` or client-wide with
+  `requestId: () => string`.
 - Errors carry `reason` (`status | network | timeout | abort | parse | config`) plus `url`, `method`,
-  `attempt`, `requestId`, `statusCode`, `response`.
+  `attempt`, `requestId`, `statusCode`, `response`; `isHttpClientError(err)` narrows them.
 
 ## Do I Need This?
 
