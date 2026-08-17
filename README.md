@@ -34,7 +34,7 @@ const client = createHttpClient({
         }
       },
       onSettled(ctx, result) {
-        // runs once per call, after every retry
+        // runs once per call, after the last attempt
         log.info(
           { id: ctx.id, url: ctx.url.href, attempts: ctx.attempt + 1, ms: ctx.duration },
           'api response',
