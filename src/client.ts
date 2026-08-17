@@ -4,6 +4,7 @@ import { parse as urlParse } from 'node:url';
 
 import { err, errAsync, fromPromise, ok, okAsync, Result, ResultAsync } from 'neverthrow';
 import { CreateHttpClientError, createHttpError, HttpClientError } from './errors';
+import { type RetryDelay, type RetryOn, retryOnTransient } from './retry';
 
 // TODO: accept Input instead of string URLs.
 export type Input = Parameters<typeof fetch>[0];
@@ -77,8 +78,9 @@ export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
   onHookError?: (err: unknown, info: { hook: HookName; plugin?: string }) => void;
 
   retries?: number;
-  retryDelay?: <T>(ctx: RequestContext, result: Result<HttpResponse<T>, HttpError>) => number;
-  retryOn?: <T>(ctx: RequestContext, result: Result<HttpResponse<T>, HttpError>) => boolean;
+  retryDelay?: RetryDelay;
+  /** Defaults to `retryOnTransient`; a 4xx other than 408/429 is not retried. */
+  retryOn?: RetryOn;
 };
 
 /**
@@ -94,8 +96,8 @@ export type HttpClientDefaultConfig = Omit<RequestInit, 'body' | 'method'> & {
  * const client = createHttpClient({
  *   baseUrl: 'https://example.com',
  *   retries: 3,
- *   retryDelay: (ctx) => Math.pow(2, ctx.attempt) * 1000,
- *   retryOn: retryOnStatus([401, 500]),
+ *   retryDelay: delayWith({ base: 200, max: 30_000, jitter: 'equal' }),
+ *   retryOn: retryWhen({ reasons: ['timeout'], statuses: [429, [500, 599]] }),
  *   plugins: [
  *     {
  *       name: 'logger',
@@ -130,14 +132,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
   } = config;
 
   const retryDelay = retryDelayOption ?? (() => 1000);
-  const retryOn =
-    retryOnOption ??
-    (<T>(_ctx: RequestContext, result: Result<HttpResponse<T>, HttpError>) => {
-      return result.match(
-        () => false,
-        () => true,
-      );
-    });
+  const retryOn = retryOnOption ?? retryOnTransient;
 
   type PreparedRequest = {
     ctx: MutableRequestContext;
@@ -379,25 +374,6 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 }
 
 export type HttpClient = ReturnType<typeof createHttpClient>;
-
-export function retryOnStatus(statuses: number[]): NonNullable<HttpClientDefaultConfig['retryOn']> {
-  return <T>(_ctx: RequestContext, result: Result<HttpResponse<T>, HttpError>) =>
-    result.match(
-      (res) => statuses.includes(res.status),
-      (err) => {
-        if (statuses.includes(err.response?.status ?? -1)) {
-          return true;
-        }
-        return false;
-      },
-    );
-}
-
-export function retryDelayExp2(
-  startDelay = 1000,
-): NonNullable<HttpClientDefaultConfig['retryDelay']> {
-  return (ctx: RequestContext) => 2 ** ctx.attempt * startDelay;
-}
 
 type AttemptSignals = {
   fetch: AbortSignal | undefined;

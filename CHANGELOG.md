@@ -6,7 +6,13 @@
 
 - `interceptRequest` / `inspectResponse` / `inspectError` are gone — use `plugins: [{ onAttempt, onSettled }]`.
 - `retryOn` / `retryDelay` now take `(ctx, result)` and read the 0-based `ctx.attempt`, so every delay
-  fires one step earlier than in 0.1 (`retryDelayExp2(200)` waits 200 ms before the first retry).
+  fires one step earlier than in 0.1 (`delayWith({ base: 200 })` waits 200 ms before the first retry).
+- `retryOnStatus([401, 500])` → `retryWhen({ statuses: [401, 500] })`, which also takes inclusive
+  ranges and matches `error.statusCode` rather than `error.response.status` — so it now fires for
+  status errors that carry no `response`. An `Ok` result no longer matches.
+- `retryDelayExp2(n)` → `delayWith({ base: n })`.
+- `retryOn` now defaults to `retryOnTransient` instead of "retry any error": a 4xx other than 408 and
+  429 is no longer retried.
 - `HttpClientError` carries a required `reason` and no longer has `request`.
 
 **Added**
@@ -16,6 +22,11 @@
 - `RequestContext`: `id`, `url`, `method`, `attempt`, `duration`, shared mutable `init`.
 - Per-attempt `timeout` and caller `signal`, at client and call level.
 - `requestId` per call and a client-level generator.
+- `retryWhen({ reasons, statuses, predicate })` and the `retryOnTransient` default.
+- `delayWith({ base, factor, max, jitter, retryAfter })` — capped exponential backoff, full/equal
+  jitter, and `Retry-After` support.
+- `RetryOn` / `RetryDelay` types, so a policy no longer needs
+  `NonNullable<HttpClientDefaultConfig['retryOn']>`.
 
 **Fixed**
 
