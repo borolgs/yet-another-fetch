@@ -14,16 +14,16 @@ pnpm format                        # biome format --write ./src
 
 ## Architecture
 
-Three files in `src/`, all exported via `index.ts`.
+Two files in `src/`, both re-exported via `index.ts`; tests live in `src/tests/`.
 
-`http-client.ts` — `createHttpClient(config)` returns
+`client.ts` — `createHttpClient(config)` returns
 `{ request, get, head, delete, post, put, patch }`. Everything returns
 `ResultAsync<HttpResponse<T>, HttpError>` (neverthrow), never throws. `get`/`head`/`delete` take
 `Omit<Init, 'method' | 'data' | 'body'>`; `post`/`put`/`patch` take `Omit<Init, 'method'>`.
 
-- `request()` merges init with default config, builds the URL (`baseUrl + url`, `query` merged into
-  the existing search params), sets `body` from `data` via `JSON.stringify`, and maps non-2xx
-  responses to an `errAsync(HttpClientError)`.
+- `prepare()` merges init with default config, builds the URL (`baseUrl + url`, `query` merged into
+  the existing search params) and sets `body` from `data` via `JSON.stringify`; `attempt()` runs the
+  fetch and maps non-2xx responses to an `errAsync(HttpClientError)`.
 - URL construction / the `query` merge and `JSON.stringify(data)` are each in a `try/catch` that
   returns `errAsync(reason: 'config')` — that is what makes "never throws" actually hold.
 - `wrapBodyMethods` returns a `Proxy` over the native `Response` so `json/text/blob/formData/
@@ -52,7 +52,7 @@ Three files in `src/`, all exported via `index.ts`.
   would reach `unhandledRejection` and kill the process, so a returned thenable is adopted into
   `onHookError` and its value dropped.
 
-`http-client.errors.ts` — `HttpClientError` plus the `createHttpError` factory (only sets fields
+`errors.ts` — `HttpClientError` plus the `createHttpError` factory (only sets fields
 that are present) and `isHttpClientError` guard. Every error carries a required
 `reason: HttpErrorReason` (`'status' | 'network' | 'timeout' | 'abort' | 'parse' | 'config'`) — it is
 a required field on the factory input so no new error path can forget it.
