@@ -20,6 +20,7 @@ import { createHttpClient, retryOnStatus, retryDelayExp2 } from 'yet-another-fet
 const client = createHttpClient({
   baseUrl: 'https://example.com',
   retries: 3,
+  timeout: 5000, // per attempt, also overridable per call
   retryDelay: retryDelayExp2(1000), // or (ctx) => 2 ** ctx.attempt * 1000
   retryOn: retryOnStatus([401, 500]),
   onHookError: (err, { hook, plugin }) => log.error({ err, hook, plugin }),
@@ -58,6 +59,8 @@ const { message } = await client
 - Hooks are sync, run in array order, and never fail the request — a throwing one goes to
   `onHookError`, which is silent when unset.
 - `ctx.attempt` is 0-based, shared with `retryOn(ctx, result)` / `retryDelay(ctx, result)`.
+- Each attempt gets a fresh `timeout`; a caller `signal` is never retried, and a per-call one replaces
+  the client-level one rather than merging with it.
 - Errors carry `reason` (`status | network | timeout | abort | parse | config`) plus `url`, `method`,
   `attempt`, `requestId`, `statusCode`, `response`.
 
