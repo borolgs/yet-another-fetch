@@ -140,13 +140,15 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
   type PreparedRequest = {
     ctx: MutableRequestContext;
     /** Per-call signal wins over the client-level one; they are not merged. */
-    signal: AbortSignal | null | undefined;
+    signal: AbortSignal | undefined;
     timeout: number | undefined;
   };
 
   /** Builds request state before retries; failures return configuration errors without hooks. */
   function prepare(url: string, init?: Init): Result<PreparedRequest, HttpError> {
     const { headers, body, data, query, requestId, method, signal, timeout, ...rest } = init ?? {};
+
+    const targetSignal = asAbortSignal(signal === null ? undefined : (signal ?? configSignal));
 
     const targetTimeout = timeout ?? configTimeout;
     if (targetTimeout != null && !isValidTimeout(targetTimeout)) {
@@ -214,7 +216,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       },
     };
 
-    return ok({ ctx, signal: signal ?? configSignal, timeout: targetTimeout });
+    return ok({ ctx, signal: targetSignal, timeout: targetTimeout });
   }
 
   function nextRequestId(): string {
@@ -480,24 +482,27 @@ function toHeaders(record: Record<string, string>): Result<Headers, unknown> {
 type AttemptSignals = {
   fetch: AbortSignal | undefined;
   timeout: AbortSignal | undefined;
-  caller: AbortSignal | null | undefined;
+  caller: AbortSignal | undefined;
   timeoutMs: number | undefined;
 };
 
-/** `AbortSignal.timeout` throws outside this range, so `prepare` rejects it as a config error. */
-const MAX_TIMEOUT_MS = 2 ** 32 - 1;
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return value instanceof AbortSignal ? value : undefined;
+}
+
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 function isValidTimeout(ms: number): boolean {
   return typeof ms === 'number' && Number.isInteger(ms) && ms >= 0 && ms <= MAX_TIMEOUT_MS;
 }
 
 function attemptSignals(
-  caller: AbortSignal | null | undefined,
+  caller: AbortSignal | undefined,
   timeoutMs: number | undefined,
 ): AttemptSignals {
   const timeout = timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
 
-  const signals = [timeout, caller].filter((signal): signal is AbortSignal => signal != null);
+  const signals = [timeout, caller].filter((signal) => signal != null);
 
   return {
     fetch: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
@@ -526,21 +531,19 @@ function transportError(
   return httpErrorFrom(ctx, { reason: 'network', cause });
 }
 
-function sleep(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
-  const abortable = signal instanceof AbortSignal ? signal : undefined;
-
-  if (abortable?.aborted) {
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);
-      abortable?.removeEventListener('abort', done);
+      signal?.removeEventListener('abort', done);
       resolve();
     };
     const timer = setTimeout(done, ms);
-    abortable?.addEventListener('abort', done, { once: true });
+    signal?.addEventListener('abort', done, { once: true });
   });
 }
 

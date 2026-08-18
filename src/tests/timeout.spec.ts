@@ -121,6 +121,8 @@ test.each([
   ['NaN', Number.NaN],
   ['infinite', Number.POSITIVE_INFINITY],
   ['out of range', 2 ** 32],
+  // Accepted by AbortSignal.timeout, but Node's timer overflows and aborts after 1ms.
+  ['past the timer range', 2 ** 31],
 ])('an %s timeout is a config error instead of a throw', async (_label, timeout) => {
   const onAttempt = vi.fn();
   const client = createHttpClient({ baseUrl, plugins: [{ onAttempt }] });
@@ -163,4 +165,41 @@ test('timeout: 0 is valid and aborts immediately', async () => {
   const error = (await client.get('/data'))._unsafeUnwrapErr();
 
   expect(error.reason).toBe('timeout');
+});
+
+test('a signal that is not an AbortSignal is ignored instead of throwing', async () => {
+  const controller = new AbortController();
+  const client = createHttpClient({ baseUrl, timeout: 300 });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'ok' });
+
+  // The classic slip: the controller instead of its signal. AbortSignal.any() would throw on it.
+  const result = await client.get('/data', { signal: controller as unknown as AbortSignal });
+
+  expect(result.isOk()).toBe(true);
+});
+
+test('a per-call signal: null opts out of the client-level signal', async () => {
+  const controller = new AbortController();
+  const client = createHttpClient({ baseUrl, signal: controller.signal });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'ok' }).delay(50);
+
+  abortSoon(controller);
+  const result = await client.get('/data', { signal: null });
+
+  expect(result.isOk()).toBe(true);
+});
+
+test('a per-call signal: undefined still inherits the client-level signal', async () => {
+  const controller = new AbortController();
+  const client = createHttpClient({ baseUrl, signal: controller.signal });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, {}).delay(300);
+
+  // How a forwarded optional signal arrives: `{ signal: options.signal }`.
+  abortSoon(controller);
+  const error = (await client.get('/data', { signal: undefined }))._unsafeUnwrapErr();
+
+  expect(error.reason).toBe('abort');
 });
