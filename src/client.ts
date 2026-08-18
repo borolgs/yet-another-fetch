@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { err, errAsync, fromPromise, ok, okAsync, Result, ResultAsync } from 'neverthrow';
-import { CreateHttpClientError, createHttpError, HttpClientError } from './errors';
+import { CreateHttpClientError, createHttpError, HttpClientError, HttpErrorReason } from './errors';
 import { clampDelay, type RetryDelay, type RetryOn, retryOnTransient } from './retry';
 
 // TODO: accept Input instead of string URLs.
@@ -19,15 +19,16 @@ export type Init = RequestInit & {
 
 export type HttpError = HttpClientError;
 
-export type HttpResponse<T> = Omit<
-  Response,
-  'text' | 'json' | 'blob' | 'formData' | 'arrayBuffer'
-> & {
+export const BodyMethod = ['json', 'arrayBuffer', 'blob', 'bytes', 'formData', 'text'] as const;
+export type BodyMethod = (typeof BodyMethod)[number];
+
+export type HttpResponse<T> = Omit<Response, BodyMethod> & {
   text: () => ResultAsync<string, HttpError>;
   json: () => ResultAsync<T, HttpError>;
   blob: () => ResultAsync<Blob, HttpError>;
   formData: () => ResultAsync<FormData, HttpError>;
   arrayBuffer: () => ResultAsync<ArrayBuffer, HttpError>;
+  bytes: () => ResultAsync<Uint8Array, HttpError>;
 };
 
 /** Shared across all attempts of a logical request. */
@@ -149,18 +150,22 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     const { headers, body, data, query, requestId, method, signal, timeout, ...rest } = init ?? {};
 
     const targetSignal = asAbortSignal(signal === null ? undefined : (signal ?? configSignal));
+    const targetMethod = method ?? 'GET';
+    const targetUrlStr = baseUrl ? baseUrl + url : url;
+
+    const configError = (init: Omit<CreateHttpClientError, 'reason'>) => {
+      const error = createHttpError({ ...init, reason: 'config' });
+      error.url = targetUrlStr;
+      error.method = targetMethod;
+      return err(error);
+    };
 
     const targetTimeout = timeout ?? configTimeout;
     if (targetTimeout != null && !isValidTimeout(targetTimeout)) {
-      return err(
-        createHttpError({
-          reason: 'config',
-          message: `Invalid timeout: ${targetTimeout}. Expected an integer between 0 and ${MAX_TIMEOUT_MS}.`,
-        }),
-      );
+      return configError({
+        message: `Invalid timeout: ${targetTimeout}. Expected an integer between 0 and ${MAX_TIMEOUT_MS}.`,
+      });
     }
-
-    const targetUrlStr = baseUrl ? baseUrl + url : url;
 
     let targetUrl: URL;
     try {
@@ -170,13 +175,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
         applyQuery(targetUrl.searchParams, query);
       }
     } catch (error) {
-      return err(
-        createHttpError({
-          reason: 'config',
-          message: `Invalid request url: ${targetUrlStr}`,
-          cause: error,
-        }),
-      );
+      return configError({ message: `Invalid request url: ${targetUrlStr}`, cause: error });
     }
 
     const targetHeaders = {
@@ -191,20 +190,14 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     try {
       targetBody = data !== undefined ? JSON.stringify(data) : body;
     } catch (error) {
-      return err(
-        createHttpError({
-          reason: 'config',
-          message: 'Failed to serialize request data',
-          cause: error,
-        }),
-      );
+      return configError({ message: 'Failed to serialize request data', cause: error });
     }
 
     const ctx: MutableRequestContext = {
       id: requestId ?? nextRequestId(),
       url: targetUrl,
       href: targetUrl.href,
-      method: method ?? 'GET',
+      method: targetMethod,
       attempt: 0,
       startedAt: performance.now(),
       duration: 0,
@@ -305,7 +298,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
         return errAsync(
           httpErrorFrom(ctx, {
             reason: 'status',
-            message: res.statusText,
+            message: res.statusText || `HTTP ${res.status}`,
             status: res.statusText,
             statusCode: res.status,
             response: res,
@@ -313,7 +306,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
         );
       }
 
-      return okAsync(wrapBodyMethods<T>(res, ctx));
+      return okAsync(wrapBodyMethods<T>(res, ctx, signals));
     });
   }
 
@@ -529,6 +522,7 @@ function transportError(
   ctx: MutableRequestContext,
   signals: AttemptSignals,
   cause: unknown,
+  fallback: HttpErrorReason = 'network',
 ): HttpClientError {
   if (signals.timeout?.aborted) {
     return httpErrorFrom(ctx, {
@@ -540,7 +534,7 @@ function transportError(
   if (signals.caller?.aborted) {
     return httpErrorFrom(ctx, { reason: 'abort', message: 'Request aborted', cause });
   }
-  return httpErrorFrom(ctx, { reason: 'network', cause });
+  return httpErrorFrom(ctx, { reason: fallback, cause });
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -563,17 +557,18 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof (value as PromiseLike<unknown> | null | undefined)?.then === 'function';
 }
 
-function wrapBodyMethods<T>(res: Response, ctx: MutableRequestContext): HttpResponse<T> {
+function wrapBodyMethods<T>(
+  res: Response,
+  ctx: MutableRequestContext,
+  signals: AttemptSignals,
+): HttpResponse<T> {
   return new Proxy(res, {
     get(target: any, prop) {
-      if (
-        ['json', 'arrayBuffer', 'blob', 'formData', 'text'].includes(prop.toString()) &&
-        typeof target[prop] === 'function'
-      ) {
+      if (BodyMethod.includes(prop.toString() as any) && typeof target[prop] === 'function') {
         return new Proxy(target[prop], {
           apply: (target, _, argumentsList) => {
             return ResultAsync.fromPromise(Reflect.apply(target, res, argumentsList) as any, (e) =>
-              httpErrorFrom(ctx, { reason: 'parse', cause: e }),
+              transportError(ctx, signals, e, 'parse'),
             );
           },
         });

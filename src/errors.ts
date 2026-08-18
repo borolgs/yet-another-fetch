@@ -24,7 +24,6 @@ export class HttpClientError extends Error {
   reason: HttpErrorReason;
   status?: string;
   statusCode?: number;
-  name = 'HttpClientError';
 
   response?: Response;
 
@@ -35,6 +34,7 @@ export class HttpClientError extends Error {
 
   constructor(message: string, reason: HttpErrorReason = 'network') {
     super(message);
+    this.name = 'HttpClientError';
     this.reason = reason;
     Error.captureStackTrace?.(this, this.constructor);
   }
@@ -53,10 +53,10 @@ export function createHttpError({
   if (cause) {
     error.cause = cause;
   }
-  if (status) {
+  if (status != null) {
     error.status = status;
   }
-  if (statusCode) {
+  if (statusCode != null) {
     error.statusCode = statusCode;
   }
   if (response) {
