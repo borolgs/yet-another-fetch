@@ -90,7 +90,7 @@ describe('plugins', () => {
       plugins: [
         {
           onAttempt: (ctx) => {
-            (ctx.init.headers as Record<string, string>).Authorization = 'Bearer token';
+            ctx.init.headers.Authorization = 'Bearer token';
           },
         },
       ],

@@ -1,16 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import querystring from 'node:querystring';
-import { parse as urlParse } from 'node:url';
 
-import { err, errAsync, fromPromise, ok, okAsync, Result, ResultAsync } from 'neverthrow';
-import { CreateHttpClientError, createHttpError, HttpClientError } from './errors';
+import { Result, ResultAsync, err, errAsync, fromPromise, ok, okAsync } from 'neverthrow';
+import { CreateHttpClientError, HttpClientError, createHttpError } from './errors';
 import { type RetryDelay, type RetryOn, retryOnTransient } from './retry';
 
 // TODO: accept Input instead of string URLs.
 export type Input = Parameters<typeof fetch>[0];
+export type QueryValue = string | number | boolean | null | undefined;
+
 export type Init = RequestInit & {
   data?: any;
-  query?: Record<string, any>;
+  query?: Record<string, QueryValue | ReadonlyArray<string | number | boolean>>;
   /** Correlation ID for this call; overrides the client-level generator. */
   requestId?: string;
   /** Per-attempt timeout in milliseconds. */
@@ -42,7 +42,7 @@ export type RequestContext = {
   /** Zero until settled, then measured to response headers including retry delays. */
   readonly duration: number;
   /** Shared across attempts, so `onAttempt` mutations persist. */
-  init: Omit<RequestInit, 'method' | 'signal'>;
+  init: Omit<RequestInit, 'method' | 'signal' | 'headers'> & { headers: Record<string, string> };
 };
 
 /** Internal context with mutable counters and the request URL snapshot. */
@@ -144,7 +144,6 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
   /** Builds request state before retries; failures return configuration errors without hooks. */
   function prepare(url: string, init?: Init): Result<PreparedRequest, HttpError> {
     const { headers, body, data, query, requestId, method, signal, timeout, ...rest } = init ?? {};
-    const defaultHeaders = defaultConfig.headers ?? {};
 
     const targetTimeout = timeout ?? configTimeout;
     if (targetTimeout != null && !isValidTimeout(targetTimeout)) {
@@ -163,8 +162,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       targetUrl = new URL(targetUrlStr);
 
       if (query) {
-        const urlQuery = urlParse(targetUrlStr, true).query;
-        targetUrl.search = `?${querystring.stringify({ ...urlQuery, ...query })}`;
+        applyQuery(targetUrl.searchParams, query);
       }
     } catch (error) {
       return err(
@@ -176,9 +174,17 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       );
     }
 
+    const targetHeaders = {
+      ...toHeaderRecord(defaultConfig.headers),
+      ...toHeaderRecord(headers),
+    };
+    if (data !== undefined) {
+      targetHeaders['content-type'] ??= 'application/json';
+    }
+
     let targetBody: RequestInit['body'];
     try {
-      targetBody = data ? JSON.stringify(data) : body;
+      targetBody = data !== undefined ? JSON.stringify(data) : body;
     } catch (error) {
       return err(
         createHttpError({
@@ -200,7 +206,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       init: {
         ...defaultConfig,
         ...rest,
-        headers: { ...defaultHeaders, ...headers },
+        headers: targetHeaders,
         body: targetBody,
       },
     };
@@ -272,8 +278,18 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     ctx: MutableRequestContext,
     signals: AttemptSignals,
   ): ResultAsync<HttpResponse<T>, HttpError> {
+    const headers = toHeaders(ctx.init.headers);
+    if (headers.isErr()) {
+      return errAsync(transportError(ctx, signals, headers.error));
+    }
+
     return fromPromise(
-      fetch(ctx.href, { ...ctx.init, method: ctx.method, signal: signals.fetch }),
+      fetch(ctx.href, {
+        ...ctx.init,
+        headers: headers.value,
+        method: ctx.method,
+        signal: signals.fetch,
+      }),
       (error) => transportError(ctx, signals, error),
     ).andThen((res) => {
       if (!res.ok) {
@@ -374,6 +390,72 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 }
 
 export type HttpClient = ReturnType<typeof createHttpClient>;
+
+/** Applies `query` on top of the params already present in the url. */
+function applyQuery(params: URLSearchParams, query: NonNullable<Init['query']>): void {
+  for (const [key, value] of Object.entries(query)) {
+    if (value == null) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      params.delete(key);
+      for (const item of value) {
+        params.append(key, String(item));
+      }
+      continue;
+    }
+    params.set(key, String(value));
+  }
+}
+
+/** Normalizes every `HeadersInit` shape to a plain record with lowercase names. */
+function toHeaderRecord(input: RequestInit['headers']): Record<string, string> {
+  const record: Record<string, string> = {};
+
+  if (!input) {
+    return record;
+  }
+
+  if (input instanceof Headers) {
+    input.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+
+  if (Array.isArray(input)) {
+    for (const [key, value] of input) {
+      if (key != null && value != null) {
+        record[key.toLowerCase()] = value;
+      }
+    }
+    return record;
+  }
+
+  for (const [key, value] of Object.entries(input as Record<string, string>)) {
+    if (value != null) {
+      record[key.toLowerCase()] = value;
+    }
+  }
+  return record;
+}
+
+/**
+ * Collapses the record back into `Headers` at fetch time.
+ */
+function toHeaders(record: Record<string, string>): Result<Headers, unknown> {
+  try {
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(record)) {
+      if (value != null) {
+        headers.set(key, value);
+      }
+    }
+    return ok(headers);
+  } catch (error) {
+    return err(error);
+  }
+}
 
 type AttemptSignals = {
   fetch: AbortSignal | undefined;

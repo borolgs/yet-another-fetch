@@ -19,7 +19,7 @@ function context(overrides: Partial<RequestContext> = {}): RequestContext {
     attempt: 0,
     startedAt: 0,
     duration: 0,
-    init: {},
+    init: { headers: {} },
     ...overrides,
   };
 }
