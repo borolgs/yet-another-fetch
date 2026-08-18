@@ -64,3 +64,42 @@ test('handle non-JSON response', async () => {
 
   expect(result).toBe('plain text');
 });
+
+test('bytes() is wrapped like the other body methods', async () => {
+  const client = createHttpClient({ baseUrl });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, 'abc');
+
+  const res = (await client.get('/data'))._unsafeUnwrap();
+  const bytes = (await res.bytes())._unsafeUnwrap();
+
+  expect(bytes).toBeInstanceOf(Uint8Array);
+  expect(Array.from(bytes)).toEqual([97, 98, 99]);
+});
+
+test('a body read after the timeout fired reports reason "timeout"', async () => {
+  const client = createHttpClient({ baseUrl, timeout: 20 });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'Success!' });
+
+  const res = (await client.get('/data'))._unsafeUnwrap();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const error = (await res.json())._unsafeUnwrapErr();
+
+  expect(error.reason).toBe('timeout');
+});
+
+test('a body read after a caller abort reports reason "abort"', async () => {
+  const controller = new AbortController();
+  const client = createHttpClient({ baseUrl });
+
+  agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'Success!' });
+
+  const res = (await client.get('/data', { signal: controller.signal }))._unsafeUnwrap();
+  controller.abort();
+
+  const error = (await res.json())._unsafeUnwrapErr();
+
+  expect(error.reason).toBe('abort');
+});

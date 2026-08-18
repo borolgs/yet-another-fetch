@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { createHttpClient } from '../client';
+import { createHttpError } from '../errors';
 import { baseUrl, setupMockAgent } from './helpers';
 
 const agent = setupMockAgent();
@@ -88,5 +89,59 @@ describe('never throws', () => {
     const error = result._unsafeUnwrapErr();
     expect(error.reason).toBe('config');
     expect((error.cause as any).name).toBe('TypeError');
+  });
+});
+
+describe('error shape', () => {
+  test('only the fields that are set are own properties', async () => {
+    const client = createHttpClient({ baseUrl });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(404, { message: 'Not Found' });
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(Object.keys(error).sort()).toEqual(
+      [
+        'attempt',
+        'method',
+        'name',
+        'reason',
+        'requestId',
+        'response',
+        'status',
+        'statusCode',
+        'url',
+      ].sort(),
+    );
+    expect(error.name).toBe('HttpClientError');
+  });
+
+  test('a config error carries no response and no attempt scalars', async () => {
+    const client = createHttpClient();
+
+    const error = (await client.get('//bad'))._unsafeUnwrapErr();
+
+    expect(Object.keys(error).sort()).toEqual(['cause', 'method', 'name', 'reason', 'url'].sort());
+    expect('response' in error).toBe(false);
+    expect('attempt' in error).toBe(false);
+    expect('requestId' in error).toBe(false);
+  });
+
+  test('a config error carries the url and method it knows', async () => {
+    const client = createHttpClient({ baseUrl });
+
+    const data: any = { name: 'John' };
+    data.self = data;
+
+    const error = (await client.post('/data', { data }))._unsafeUnwrapErr();
+
+    expect(error).toMatchObject({ reason: 'config', url: `${baseUrl}/data`, method: 'POST' });
+  });
+
+  test('an empty statusText is preserved instead of dropped', () => {
+    const error = createHttpError({ reason: 'status', status: '', statusCode: 500 });
+
+    expect(error.status).toBe('');
+    expect(error.statusCode).toBe(500);
   });
 });

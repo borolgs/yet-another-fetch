@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ESNext",
+    "useDefineForClassFields": false,
     "module": "ESNext",
     "moduleResolution": "Node",
     "lib": ["esnext"],
@@ -13,8 +14,8 @@
     "noStrictGenericChecks": false,
     "declaration": true,
     "baseUrl": ".",
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules"],
 }
