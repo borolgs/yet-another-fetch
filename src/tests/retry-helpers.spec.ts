@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import type { HttpError, HttpResponse, RequestContext } from '../client';
 import { createHttpError, type HttpErrorReason } from '../errors';
-import { delayWith, retryOnTransient, retryWhen } from '../retry';
+import { clampDelay, delayWith, retryOnTransient, retryWhen } from '../retry';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -241,5 +241,16 @@ describe('delayWith retryAfter', () => {
 
   test('the header is ignored unless retryAfter is on', () => {
     expect(delayWith({ base: 200 })(context({ attempt: 1 }), retryAfter('2'))).toBe(400);
+  });
+});
+
+describe('clampDelay', () => {
+  test('a hang is worse than a fast retry, so only +Infinity reaches the ceiling', () => {
+    expect(clampDelay(Number.POSITIVE_INFINITY)).toBe(2 ** 31 - 1);
+    expect(clampDelay(Number.NaN)).toBe(0);
+    expect(clampDelay(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(clampDelay(-1)).toBe(0);
+    expect(clampDelay(2 ** 31)).toBe(2 ** 31 - 1);
+    expect(clampDelay(200)).toBe(200);
   });
 });

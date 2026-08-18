@@ -91,9 +91,12 @@ function applyJitter(delay: number, jitter: Jitter): number {
   return delay;
 }
 
-function clampDelay(delay: number): number {
-  if (!Number.isFinite(delay)) {
+export function clampDelay(delay: number): number {
+  if (delay === Number.POSITIVE_INFINITY) {
     return MAX_DELAY_MS;
+  }
+  if (!Number.isFinite(delay)) {
+    return 0;
   }
   return Math.min(Math.max(delay, 0), MAX_DELAY_MS);
 }
