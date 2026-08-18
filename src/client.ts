@@ -253,6 +253,8 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
         break;
       }
 
+      await drainBody(result.isErr() ? result.error.response : result.value);
+
       await sleep(delay, signal);
       if (signal?.aborted) {
         result = err(httpErrorFrom(ctx, { reason: 'abort', message: 'Request aborted' }));
@@ -551,6 +553,29 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
     const timer = setTimeout(done, ms);
     signal?.addEventListener('abort', done, { once: true });
   });
+}
+
+const MAX_DRAIN_MS = 1000;
+
+async function drainBody(res: Pick<Response, 'body' | 'bodyUsed'> | undefined): Promise<void> {
+  const body = res?.body;
+
+  if (!body || res.bodyUsed || body.locked) {
+    return;
+  }
+
+  const reader = body.getReader();
+
+  const cancel = setTimeout(() => {
+    reader.cancel().catch(() => {});
+  }, MAX_DRAIN_MS);
+
+  await fromPromise(readToEnd(reader), () => undefined);
+  clearTimeout(cancel);
+}
+
+async function readToEnd(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  while (!(await reader.read()).done) {}
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

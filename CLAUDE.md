@@ -106,7 +106,7 @@ a required field on the factory input so no new error path can forget it.
 
 Split by concern in `src/tests/`: `request`, `response`, `errors`, `retry` (loop + the default
 `retryOn`), `retry-helpers` (the builders, pure — no `MockAgent`), `context`, `plugins`, `hook-errors`,
-`timeout`. The mock's `.delay(ms)` simulates a slow upstream.
+`timeout`, `drain` (a real loopback server — `MockAgent` cannot stream a body). The mock's `.delay(ms)` simulates a slow upstream.
 
 `tests/helpers.ts` exports `baseUrl` and `setupMockAgent()` — call it once per file at module scope. It
 installs a fresh undici `MockAgent` with `disableNetConnect()` in `beforeEach` (and

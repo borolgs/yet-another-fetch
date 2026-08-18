@@ -72,6 +72,11 @@ const { message } = await client
   `requestId: () => string`.
 - Errors carry `reason` (`status | network | timeout | abort | parse | config`) plus `url`, `method`,
   `attempt`, `requestId`, `statusCode`, `response`; `isHttpClientError(err)` narrows them.
+- The response of an attempt that is retried away is drained for you (up to a second, after which its
+  body is cancelled). The error you finally get back carries a live unread `response`, and finishing
+  that one is on you: read it (`await err.response?.text()`) to return the connection to the pool, or
+  `await err.response?.body?.cancel()` to drop it. Branching on `statusCode` alone leaves a
+  connection checked out per failed request.
 
 ## Do I Need This?
 
