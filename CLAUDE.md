@@ -12,6 +12,35 @@ pnpm lint                          # biome check --write ./src (lint + organize 
 pnpm format                        # biome format --write ./src
 ```
 
+## Conventions
+
+- **Comments** are fine, but short and to the point. Comment the "why" — an upstream quirk, a magic
+  constant's origin, why the obvious alternative doesn't work. Never restate what the line already
+  says (that a flag gates something, that a variable starts `null`); if the comment paraphrases the
+  code, delete it. A comment longer than a line or two is only for a real hack or genuinely tricky
+  logic — and that's itself a signal the code should be reworked. No section banners or step
+  narration.
+- **Function order**: main/public function first, then helpers in order of usage, so the file reads
+  top-down.
+
+**Errors are values on the inside too.** neverthrow is the public surface, so the internals use it
+for the same reason rather than only at the boundary: a helper that can fail returns
+`Result` / `ResultAsync` and the caller composes it. A `try` sitting in the middle of a happy path is
+a smell — it is control flow standing in for a return type.
+
+- A `try` belongs only at an *edge*, where a foreign API throws instead of returning: `new URL`,
+  `JSON.stringify`, `Headers.set`. Wrap it in the smallest helper that can own the failure and return
+  a `Result` — `toHeaders` and `prepare`'s three guards are the shape to copy.
+- `Result.fromThrowable` / `ResultAsync.fromThrowable` / `fromPromise` exist for exactly that wrap;
+  reach for them before hand-rolling `try/catch`.
+- **`fromPromise` does not cover its own argument.** `fromPromise(f(x), mapErr)` evaluates `f(x)`
+  first, so a synchronous throw there escapes the mapper, rejects the `ResultAsync` and breaks
+  "never throws" for every caller using `.unwrapOr()`. `fetch()` itself never throws synchronously
+  (it returns a rejected promise) — the risk is whatever you compute *into* its init object.
+- Only errors that reach a caller need to be `HttpClientError` with a `reason`. An internal helper
+  may return a looser `Result<T, unknown>` and let the call site classify it — `attempt` running
+  `toHeaders`' error through `transportError` is the example.
+
 ## Architecture
 
 Three files in `src/`, all re-exported via `index.ts`; tests live in `src/tests/`.
