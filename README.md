@@ -11,7 +11,7 @@ It utilizes the fetch API under the hood and provides an API similar to fetch wi
 ## Usage
 
 ```bash
-pnpm i yet-another-fetch
+pnpm i yet-another-fetch neverthrow
 ```
 
 ```ts
@@ -21,7 +21,8 @@ const client = createHttpClient({
   baseUrl: 'https://example.com',
   retries: 3, // attempts in total; unset = no retries
   timeout: 5000, // per attempt, also overridable per call
-  // 200/400/800…, capped at 30s, equal jitter; a Retry-After header wins and is never jittered
+  // 200/400/800…, capped at 30s, equal jitter; a Retry-After header wins, is never jittered,
+  // and has its own ceiling: 60s, or retryAfter: { max }
   retryDelay: delayWith({ base: 200, max: 30_000, jitter: 'equal', retryAfter: true }),
   // defaults to retryOnTransient: network | timeout | 408 | 429 | 5xx. Fields are OR-ed,
   // `statuses` takes codes and inclusive ranges, `predicate` is (error, ctx) => boolean
@@ -70,13 +71,13 @@ const { message } = await client
   the client-level one rather than merging with it.
 - `ctx.id` is `crypto.randomUUID()`, overridable per call with `requestId: string` or client-wide with
   `requestId: () => string`.
+- `data` is JSON-serialized and sets `content-type: application/json` unless you set one. Headers
+  merge case-insensitively, so a per-call `authorization` replaces a default `Authorization`.
 - Errors carry `reason` (`status | network | timeout | abort | parse | config`) plus `url`, `method`,
-  `attempt`, `requestId`, `statusCode`, `response`; `isHttpClientError(err)` narrows them.
-- The response of an attempt that is retried away is drained for you (up to a second, after which its
-  body is cancelled). The error you finally get back carries a live unread `response`, and finishing
-  that one is on you: read it (`await err.response?.text()`) to return the connection to the pool, or
-  `await err.response?.body?.cancel()` to drop it. Branching on `statusCode` alone leaves a
-  connection checked out per failed request.
+  `attempt`, `requestId`, `statusCode`, `response`; a `config` error has only the first two.
+  `isHttpClientError(err)` narrows them.
+- Retried-away responses are drained for you; the error you finally get carries a live unread
+  `response` — read it or `await err.response?.body?.cancel()`, or the connection stays checked out.
 
 ## Do I Need This?
 

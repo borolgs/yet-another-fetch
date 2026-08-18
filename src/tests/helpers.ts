@@ -19,8 +19,14 @@ export function setupMockAgent() {
     agent.disableNetConnect();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    try {
+      // An unconsumed interceptor means the client skipped a fetch it was expected to make.
+      agent.assertNoPendingInterceptors();
+    } finally {
+      await agent.close();
+    }
   });
 
   return {
