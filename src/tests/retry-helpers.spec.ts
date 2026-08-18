@@ -212,9 +212,64 @@ describe('delayWith retryAfter', () => {
     expect(delayWith({ retryAfter: true })(context(), retryAfter(at))).toBe(0);
   });
 
-  test('caps at 60s by default and at max when given', () => {
+  test('caps at 60s by default and at its own max when given', () => {
     expect(delayWith({ retryAfter: true })(context(), retryAfter('3600'))).toBe(60_000);
-    expect(delayWith({ retryAfter: true, max: 5000 })(context(), retryAfter('3600'))).toBe(5000);
+    expect(delayWith({ retryAfter: { max: 300_000 } })(context(), retryAfter('3600'))).toBe(
+      300_000,
+    );
+  });
+
+  test('the backoff max does not shorten a server-set wait', () => {
+    const delay = delayWith({ base: 200, max: 30_000, jitter: 'equal', retryAfter: true });
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    expect(delay(context({ attempt: 1 }), retryAfter('3600'))).toBe(60_000);
+    // The backoff itself is still capped by max.
+    expect(delay(context({ attempt: 20 }), status(503))).toBe(15_000);
+  });
+
+  test('only an HTTP-date is read as a date, everything else falls through', () => {
+    const delay = delayWith({ base: 200, retryAfter: true });
+    const falls = [
+      '1.5',
+      '0.5',
+      '+5',
+      '5,5',
+      'soon',
+      '-5',
+      'Foo, 21 Oct 2015 07:28:00 GMT', // not a day-name
+      'Wed, 21 Foo 2015 07:28:00 GMT', // not a month
+      'Wed, 32 Oct 2015 07:28:00 GMT', // no such day
+      'Wed, 21 Oct 2015 25:00:00 GMT', // no such hour
+      '2015-10-21T07:28:00Z', // ISO is not an HTTP-date
+    ];
+
+    for (const value of falls) {
+      expect(delay(context({ attempt: 1 }), retryAfter(value))).toBe(400);
+    }
+
+    expect(delay(context({ attempt: 1 }), retryAfter('Wed, 21 Oct 2015 07:28:00 GMT'))).toBe(0);
+  });
+
+  test('accepts the two obsolete formats RFC 9110 says recipients MUST take', () => {
+    const delay = delayWith({ base: 200, retryAfter: true });
+    const past = ['Sunday, 06-Nov-94 08:49:37 GMT', 'Sun Nov  6 08:49:37 1994'];
+
+    for (const value of past) {
+      expect(delay(context({ attempt: 1 }), retryAfter(value))).toBe(0);
+    }
+  });
+
+  test('an asctime date is read as GMT, not as local time', () => {
+    // V8 parses a bare asctime in the local zone, which would skew the wait by the UTC offset.
+    const at = new Date(Date.now() + 30_000);
+    const [, day, mon, year, time] = at.toUTCString().split(/[ ,]+/);
+    const asctime = `Sun ${mon} ${day} ${time} ${year}`;
+
+    const delay = delayWith({ base: 200, retryAfter: true })(context(), retryAfter(asctime));
+
+    expect(delay).toBeGreaterThan(28_000);
+    expect(delay).toBeLessThanOrEqual(30_000);
   });
 
   test('falls through to the backoff when the header is missing or malformed', () => {
@@ -222,6 +277,7 @@ describe('delayWith retryAfter', () => {
 
     expect(delay(context({ attempt: 1 }), status(503))).toBe(400);
     expect(delay(context({ attempt: 1 }), retryAfter('soon'))).toBe(400);
+    expect(delay(context({ attempt: 1 }), retryAfter('   '))).toBe(400);
     expect(delay(context({ attempt: 1 }), retryAfter(''))).toBe(400);
   });
 

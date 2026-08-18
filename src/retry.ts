@@ -47,7 +47,11 @@ export type RetryDelayOptions = {
   factor?: number;
   max?: number;
   jitter?: Jitter;
-  retryAfter?: boolean;
+  retryAfter?:
+    | boolean
+    | {
+        max?: number;
+      };
 };
 
 /** Exponential backoff with optional jitter and `Retry-After` support. */
@@ -58,7 +62,10 @@ export function delayWith(options: RetryDelayOptions = {}): RetryDelay {
     if (retryAfter) {
       const delay = readRetryAfter(result);
       if (delay != null) {
-        return clampDelay(Math.min(delay, max ?? MAX_RETRY_AFTER_MS));
+        // retrying inside a ban window is worse than waiting
+        const cap =
+          (typeof retryAfter === 'object' ? retryAfter.max : undefined) ?? MAX_RETRY_AFTER_MS;
+        return clampDelay(Math.min(delay, cap));
       }
     }
 
@@ -70,6 +77,16 @@ export function delayWith(options: RetryDelayOptions = {}): RetryDelay {
 
 const MAX_DELAY_MS = 2 ** 31 - 1;
 const MAX_RETRY_AFTER_MS = 60_000;
+
+const DAY = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)';
+const DAY_LONG = '(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)';
+const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+const TIME = '\\d{2}:\\d{2}:\\d{2}';
+
+// RFC 9110 5.6.7: senders MUST use IMF-fixdate, recipients MUST accept all three.
+const IMF_FIXDATE = new RegExp(`^${DAY}, \\d{2} ${MONTH} \\d{4} ${TIME} GMT$`);
+const RFC_850 = new RegExp(`^${DAY_LONG}, \\d{2}-${MONTH}-\\d{2} ${TIME} GMT$`);
+const ASCTIME = new RegExp(`^${DAY} ${MONTH} [ \\d]\\d ${TIME} \\d{4}$`);
 
 function matchesStatus(statuses: readonly StatusMatcher[] | undefined, code: number | undefined) {
   if (!statuses || code == null) {
@@ -116,6 +133,23 @@ function readRetryAfter<T>(result: Result<HttpResponse<T>, HttpError>): number |
     return Number(value) * 1000;
   }
 
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+  const at = parseHttpDate(value);
+  return at == null ? null : Math.max(0, at - Date.now());
+}
+
+// TODO: V8's two-digit-year pivot is fixed at 1950-2049, RFC 9110 wants a rolling 50-year window,
+// so an RFC 850 date with a year >= 50 reads as the past and retries now. Rare enough to leave.
+function parseHttpDate(value: string): number | null {
+  // asctime carries no zone and V8 reads it as local time; RFC 9110 says it is GMT.
+  const stamp = ASCTIME.test(value)
+    ? `${value} GMT`
+    : IMF_FIXDATE.test(value) || RFC_850.test(value)
+      ? value
+      : null;
+  if (stamp == null) {
+    return null;
+  }
+
+  const at = Date.parse(stamp);
+  return Number.isNaN(at) ? null : at;
 }
