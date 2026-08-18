@@ -25,12 +25,13 @@
     "format": "biome format --write ./src",
     "lint": "biome check --write ./src"
   },
-  "dependencies": {
-    "neverthrow": "8.1.1"
+  "peerDependencies": {
+    "neverthrow": ">=8.1.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
     "@types/node": "24.10.0",
+    "neverthrow": "8.1.1",
     "smartbundle": "0.11.1",
     "typescript": "5.7.2",
     "undici": "7.0.0",

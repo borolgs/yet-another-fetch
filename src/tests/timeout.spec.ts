@@ -125,9 +125,8 @@ test.each([
   ['past the timer range', 2 ** 31],
 ])('an %s timeout is a config error instead of a throw', async (_label, timeout) => {
   const onAttempt = vi.fn();
+  // No interceptor: a 'config' error never reaches fetch, and the harness asserts none is left over.
   const client = createHttpClient({ baseUrl, plugins: [{ onAttempt }] });
-
-  agent.intercept({ method: 'GET', path: '/data' }).reply(200, {}).persist();
 
   const error = (await client.get('/data', { timeout }))._unsafeUnwrapErr();
 
@@ -139,8 +138,6 @@ test.each([
 
 test('an invalid client-level timeout is a config error', async () => {
   const client = createHttpClient({ baseUrl, timeout: -1 });
-
-  agent.intercept({ method: 'GET', path: '/data' }).reply(200, {});
 
   const error = (await client.get('/data'))._unsafeUnwrapErr();
 
