@@ -275,9 +275,9 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
   }
 
   function callOnAttempt(ctx: MutableRequestContext) {
-    for (const { name, onAttempt } of plugins) {
-      if (onAttempt) {
-        runHook('onAttempt', name, () => onAttempt(ctx));
+    for (const plugin of plugins) {
+      if (plugin.onAttempt) {
+        runHook('onAttempt', plugin.name, () => plugin.onAttempt?.(ctx));
       }
     }
   }
@@ -321,7 +321,18 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     ctx: MutableRequestContext,
     result: Result<HttpResponse<T>, HttpError>,
   ): boolean {
-    return runHook('retryOn', undefined, () => retryOn(ctx, result)) ?? false;
+    const retry = runHook('retryOn', undefined, () => retryOn(ctx, result));
+    if (retry === undefined) {
+      return false;
+    }
+    if (typeof retry !== 'boolean') {
+      reportHookError(
+        new TypeError(`retryOn must return a boolean, got ${typeof retry}`),
+        'retryOn',
+      );
+      return false;
+    }
+    return retry;
   }
 
   function delayBeforeRetry<T>(
@@ -329,7 +340,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     result: Result<HttpResponse<T>, HttpError>,
   ): number | null {
     const delay = runHook('retryDelay', undefined, () => retryDelay(ctx, result));
-    if (delay == null) {
+    if (delay === undefined) {
       return null;
     }
     if (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0) {
@@ -348,10 +359,10 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     ctx: MutableRequestContext,
     result: Result<HttpResponse<T>, HttpError>,
   ) {
-    for (const { name, onSettled } of plugins) {
-      if (onSettled) {
-        runHook('onSettled', name, () =>
-          onSettled(ctx, result as Result<HttpResponse<unknown>, HttpError>),
+    for (const plugin of plugins) {
+      if (plugin.onSettled) {
+        runHook('onSettled', plugin.name, () =>
+          plugin.onSettled?.(ctx, result as Result<HttpResponse<unknown>, HttpError>),
         );
       }
     }
@@ -362,21 +373,22 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
    * as invalid and treated as returning `undefined`.
    */
   function runHook<T>(hook: HookName, plugin: string | undefined, call: () => T): T | undefined {
-    let returned: T;
     try {
-      returned = call();
+      const returned = call();
+
+      if (isThenable(returned)) {
+        Promise.resolve(returned).then(undefined, (error: unknown) =>
+          reportHookError(error, hook, plugin),
+        );
+        reportHookError(new TypeError(`${hook} must be synchronous`), hook, plugin);
+        return undefined;
+      }
+
+      return returned;
     } catch (error) {
       reportHookError(error, hook, plugin);
       return undefined;
     }
-
-    if (isThenable(returned)) {
-      returned.then(undefined, (error: unknown) => reportHookError(error, hook, plugin));
-      reportHookError(new TypeError(`${hook} must be synchronous`), hook, plugin);
-      return undefined;
-    }
-
-    return returned;
   }
 
   function reportHookError(error: unknown, hook: HookName, plugin?: string) {

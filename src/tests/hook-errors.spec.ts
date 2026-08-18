@@ -89,6 +89,48 @@ describe('hook errors', () => {
     expect(onHookError).toHaveBeenCalledWith(expect.any(Error), { hook: 'retryDelay' });
   });
 
+  test('a retryOn returning a non-boolean is reported and stops retrying', async () => {
+    const onHookError = vi.fn();
+    const onAttempt = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 3,
+      retryDelay: () => 1,
+      retryOn: (() => 'yes') as never,
+      onHookError,
+      plugins: [{ onAttempt }],
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(500, 'nope');
+
+    const result = await client.get('/data');
+
+    expect(result._unsafeUnwrapErr().statusCode).toBe(500);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+    expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), { hook: 'retryOn' });
+  });
+
+  test('a retryOn returning null is reported and stops retrying', async () => {
+    const onHookError = vi.fn();
+    const onAttempt = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 3,
+      retryDelay: () => 1,
+      retryOn: (() => null) as never,
+      onHookError,
+      plugins: [{ onAttempt }],
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(500, 'nope');
+
+    const result = await client.get('/data');
+
+    expect(result._unsafeUnwrapErr().statusCode).toBe(500);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+    expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), { hook: 'retryOn' });
+  });
+
   test('with onHookError unset, nothing fails and nothing is logged', async () => {
     const consoleSpies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((level) =>
       vi.spyOn(console, level).mockImplementation(() => {}),
@@ -197,6 +239,102 @@ describe('hook errors', () => {
 
       expect(escaped).toEqual([]);
       expect(result?.isOk()).toBe(true);
+    });
+
+    test('a hand-rolled thenable hook settles as a normal Result', async () => {
+      const onHookError = vi.fn();
+      const client = createHttpClient({
+        baseUrl,
+        onHookError,
+        plugins: [
+          {
+            name: 'thenable',
+            // Calls `onFulfilled` unconditionally, which a native promise never does.
+            onAttempt: (() => ({
+              // biome-ignore lint/suspicious/noThenProperty: a hand-rolled thenable is the subject
+              then(onFulfilled: (value: unknown) => void) {
+                onFulfilled(1);
+              },
+            })) as never,
+          },
+        ],
+      });
+
+      agent.intercept({ method: 'GET', path: '/data' }).reply(200, '');
+
+      let result: Awaited<ReturnType<typeof client.get>> | undefined;
+      const escaped = await unhandledRejections(async () => {
+        result = await client.get('/data');
+      });
+
+      expect(escaped).toEqual([]);
+      expect(result?.isOk()).toBe(true);
+      expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), {
+        hook: 'onAttempt',
+        plugin: 'thenable',
+      });
+    });
+
+    test('a thenable fulfilling with a rejected promise is reported, not left unhandled', async () => {
+      const onHookError = vi.fn();
+      const client = createHttpClient({
+        baseUrl,
+        onHookError,
+        plugins: [
+          {
+            name: 'thenable',
+            onAttempt: (() => ({
+              // biome-ignore lint/suspicious/noThenProperty: a hand-rolled thenable is the subject
+              then(onFulfilled: (value: unknown) => void) {
+                onFulfilled(Promise.reject(new Error('nested')));
+              },
+            })) as never,
+          },
+        ],
+      });
+
+      agent.intercept({ method: 'GET', path: '/data' }).reply(200, '');
+
+      let result: Awaited<ReturnType<typeof client.get>> | undefined;
+      const escaped = await unhandledRejections(async () => {
+        result = await client.get('/data');
+      });
+
+      expect(escaped).toEqual([]);
+      expect(result?.isOk()).toBe(true);
+      expect(onHookError).toHaveBeenCalledWith(expect.any(Error), {
+        hook: 'onAttempt',
+        plugin: 'thenable',
+      });
+    });
+
+    test('a throwing `then` getter is reported, not thrown at the caller', async () => {
+      const onHookError = vi.fn();
+      const client = createHttpClient({
+        baseUrl,
+        onHookError,
+        plugins: [
+          {
+            name: 'thenable',
+            onAttempt: (() => ({
+              // biome-ignore lint/suspicious/noThenProperty: a throwing `then` getter is the subject
+              get then() {
+                throw new Error('boom');
+              },
+            })) as never,
+          },
+        ],
+      });
+
+      agent.intercept({ method: 'GET', path: '/data' }).reply(200, '');
+
+      const result = await client.get('/data');
+
+      expect(result.isOk()).toBe(true);
+      expect(onHookError).toHaveBeenCalledWith(expect.any(Error), {
+        hook: 'onAttempt',
+        plugin: 'thenable',
+      });
     });
 
     test('an async retryOn fails closed instead of retrying on a truthy promise', async () => {

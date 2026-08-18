@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { createHttpClient, type HttpClientPlugin } from '../client';
+import { createHttpClient, type HttpClientPlugin, type RequestContext } from '../client';
 import { baseUrl, setupMockAgent } from './helpers';
 
 const agent = setupMockAgent();
@@ -124,6 +124,66 @@ describe('plugins', () => {
     await client.get('/data');
 
     expect(order).toEqual(['a:attempt', 'b:attempt', 'a:settled', 'b:settled']);
+  });
+
+  test('a class-based plugin keeps its receiver in both hooks', async () => {
+    class Stateful implements HttpClientPlugin {
+      name = 'stateful';
+      seen: number[] = [];
+      settled = 0;
+
+      onAttempt(ctx: RequestContext) {
+        this.seen.push(ctx.attempt);
+      }
+
+      onSettled() {
+        this.settled++;
+      }
+    }
+
+    const plugin = new Stateful();
+    const onHookError = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 2,
+      retryDelay: () => 1,
+      onHookError,
+      plugins: [plugin],
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(500, 'nope');
+    agent.intercept({ method: 'GET', path: '/data' }).reply(200, '');
+
+    const result = await client.get('/data');
+
+    expect(result.isOk()).toBe(true);
+    expect(plugin.seen).toEqual([0, 1]);
+    expect(plugin.settled).toBe(1);
+    expect(onHookError).not.toHaveBeenCalled();
+  });
+
+  test('a method-shorthand plugin observes every attempt', async () => {
+    const plugin = {
+      name: 'counter',
+      hits: 0,
+      onAttempt() {
+        this.hits++;
+      },
+    };
+
+    const client = createHttpClient({
+      baseUrl,
+      retries: 2,
+      retryDelay: () => 1,
+      plugins: [plugin],
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(500, 'nope');
+    agent.intercept({ method: 'GET', path: '/data' }).reply(200, '');
+
+    await client.get('/data');
+
+    expect(plugin.hits).toBe(2);
   });
 
   test('a "config" error fires no hook at all', async () => {
