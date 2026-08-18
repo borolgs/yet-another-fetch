@@ -217,3 +217,62 @@ describe('retry loop safety', () => {
     expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), { hook: 'retryDelay' });
   });
 });
+
+describe('connection hygiene', () => {
+  test('drains the response of every attempt that is retried away', async () => {
+    const retried: Response[] = [];
+    const client = createHttpClient({
+      baseUrl,
+      retries: 3,
+      retryDelay: () => 0,
+      retryOn: (_ctx, result) => {
+        if (result.isErr() && result.error.response) {
+          retried.push(result.error.response);
+        }
+        return result.isErr();
+      },
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope');
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope');
+    agent.intercept({ method: 'GET', path: '/data' }).reply(200, { message: 'Success' });
+
+    const result = await client.get('/data');
+
+    expect(result.isOk()).toBe(true);
+    // Captured before the drain, so a false here would mean the drain never ran.
+    expect(retried.map((res) => res.bodyUsed)).toEqual([true, true]);
+  });
+
+  test('a response body a hook has locked is left alone', async () => {
+    const client = createHttpClient({
+      baseUrl,
+      retries: 2,
+      retryDelay: () => 0,
+      retryOn: (_ctx, result) => {
+        if (result.isErr()) {
+          result.error.response?.body?.getReader();
+        }
+        return true;
+      },
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    // The drain must not take a second reader: that throws, out of the never-throws path.
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.statusCode).toBe(503);
+  });
+
+  test('leaves the terminal error response unread', async () => {
+    const client = createHttpClient({ baseUrl, retries: 2, retryDelay: () => 0 });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.response?.bodyUsed).toBe(false);
+    await expect(error.response?.text()).resolves.toBe('nope');
+  });
+});
