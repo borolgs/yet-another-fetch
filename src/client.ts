@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { Result, ResultAsync, err, errAsync, fromPromise, ok, okAsync } from 'neverthrow';
-import { CreateHttpClientError, HttpClientError, createHttpError } from './errors';
-import { type RetryDelay, type RetryOn, retryOnTransient } from './retry';
+import { err, errAsync, fromPromise, ok, okAsync, Result, ResultAsync } from 'neverthrow';
+import { CreateHttpClientError, createHttpError, HttpClientError } from './errors';
+import { clampDelay, type RetryDelay, type RetryOn, retryOnTransient } from './retry';
 
 // TODO: accept Input instead of string URLs.
 export type Input = Parameters<typeof fetch>[0];
@@ -133,6 +133,9 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
 
   const retryDelay = retryDelayOption ?? (() => 1000);
   const retryOn = retryOnOption ?? retryOnTransient;
+  /** A non-integer, negative or NaN `retries` behaves as unset: one attempt, no retry loop. */
+  const retryLimit =
+    retries != null && Number.isInteger(retries) && retries >= 0 ? retries : undefined;
 
   type PreparedRequest = {
     ctx: MutableRequestContext;
@@ -243,7 +246,7 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
       if (result.isErr() && result.error.reason === 'abort') {
         break;
       }
-      if (retries == null || ctx.attempt >= retries - 1) {
+      if (retryLimit == null || ctx.attempt >= retryLimit - 1) {
         break;
       }
       if (!shouldRetry(ctx, result)) {
@@ -255,7 +258,11 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
         break;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await sleep(delay, signal);
+      if (signal?.aborted) {
+        result = err(httpErrorFrom(ctx, { reason: 'abort', message: 'Request aborted' }));
+        break;
+      }
       ctx.attempt++;
     }
 
@@ -319,7 +326,20 @@ export function createHttpClient(config: HttpClientDefaultConfig = {}) {
     ctx: MutableRequestContext,
     result: Result<HttpResponse<T>, HttpError>,
   ): number | null {
-    return runHook('retryDelay', undefined, () => retryDelay(ctx, result)) ?? null;
+    const delay = runHook('retryDelay', undefined, () => retryDelay(ctx, result));
+    if (delay == null) {
+      return null;
+    }
+    if (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0) {
+      // Interpolating the raw value would throw for a symbol, from inside the never-throws path.
+      const got = typeof delay === 'number' ? delay : typeof delay;
+      reportHookError(
+        new TypeError(`retryDelay must return a non-negative finite number, got ${got}`),
+        'retryDelay',
+      );
+      return null;
+    }
+    return clampDelay(delay);
   }
 
   function callOnSettled<T>(
@@ -504,6 +524,24 @@ function transportError(
     return httpErrorFrom(ctx, { reason: 'abort', message: 'Request aborted', cause });
   }
   return httpErrorFrom(ctx, { reason: 'network', cause });
+}
+
+function sleep(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  const abortable = signal instanceof AbortSignal ? signal : undefined;
+
+  if (abortable?.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      abortable?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    abortable?.addEventListener('abort', done, { once: true });
+  });
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

@@ -109,3 +109,111 @@ describe('retry helpers', () => {
     expect(ctx.method).toBe('GET');
   });
 });
+
+describe('retry loop safety', () => {
+  test.each([Number.NaN, -1, 2.5])('retries: %p degrades to a single attempt', async (retries) => {
+    const onAttempt = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries,
+      retryDelay: () => 0,
+      plugins: [{ onAttempt }],
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.statusCode).toBe(503);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  test('a caller abort during the backoff settles promptly with reason: abort', async () => {
+    const controller = new AbortController();
+    const onAttempt = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 3,
+      retryDelay: () => 2000,
+      signal: controller.signal,
+      plugins: [{ onAttempt }],
+    });
+
+    // A single interceptor: a second fetch would fail as a net-connect error, not an abort.
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope');
+    setTimeout(() => controller.abort(), 20);
+
+    const started = performance.now();
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+    const elapsed = performance.now() - started;
+
+    expect(error.reason).toBe('abort');
+    expect(elapsed).toBeLessThan(1000);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  test('a signal that is not an AbortSignal cannot break the backoff', async () => {
+    const uncaught = vi.fn();
+    process.on('uncaughtException', uncaught);
+    const client = createHttpClient({
+      baseUrl,
+      retries: 2,
+      retryDelay: () => 10,
+      // The AbortController slip: an object with no addEventListener.
+      signal: {} as unknown as AbortSignal,
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    // Settles as a Result rather than rejecting; the request is simply not cancellable.
+    const result = await client.get('/data');
+    // The crash came from the timer callback, after the sleep had already resolved.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.off('uncaughtException', uncaught);
+
+    expect(result.isErr()).toBe(true);
+    expect(uncaught).not.toHaveBeenCalled();
+  });
+
+  test.each([Number.NaN, -1, Number.POSITIVE_INFINITY])(
+    'a retryDelay of %p stops the retries instead of reaching setTimeout',
+    async (delay) => {
+      const emitWarning = vi.spyOn(process, 'emitWarning');
+      const onHookError = vi.fn();
+      const onAttempt = vi.fn();
+      const client = createHttpClient({
+        baseUrl,
+        retries: 3,
+        retryDelay: () => delay,
+        onHookError,
+        plugins: [{ onAttempt }],
+      });
+
+      agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+      const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+      expect(error.statusCode).toBe(503);
+      expect(onAttempt).toHaveBeenCalledTimes(1);
+      expect(emitWarning).not.toHaveBeenCalled();
+      expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), { hook: 'retryDelay' });
+    },
+  );
+
+  test('a retryDelay returning a symbol is reported instead of throwing', async () => {
+    const onHookError = vi.fn();
+    const client = createHttpClient({
+      baseUrl,
+      retries: 2,
+      retryDelay: () => Symbol('nope') as unknown as number,
+      onHookError,
+    });
+
+    agent.intercept({ method: 'GET', path: '/data' }).reply(503, 'nope').persist();
+
+    const error = (await client.get('/data'))._unsafeUnwrapErr();
+
+    expect(error.statusCode).toBe(503);
+    expect(onHookError).toHaveBeenCalledWith(expect.any(TypeError), { hook: 'retryDelay' });
+  });
+});
